@@ -17,8 +17,6 @@ bot = telebot.TeleBot(BOT_TOKEN)
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     """Приветствие и запрос геолокации"""
-    user_id = message.from_user.id
-    
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
     markup.add(types.KeyboardButton("📍 Отправить местоположение", request_location=True))
     
@@ -35,7 +33,6 @@ def send_welcome(message):
 @bot.message_handler(content_types=['location'])
 def handle_location(message):
     """Обработка геолокации и запуск анализа"""
-    user_id = message.from_user.id
     lat = message.location.latitude
     lon = message.location.longitude
     
@@ -44,24 +41,24 @@ def handle_location(message):
     # ШАГ 2: Берем анализ качества воздуха
     air_data, source_name = get_best_air_data(lat, lon)
     
-    # ШАГ 3: Берем погоду (ветер, влажность)
+    # ШАГ 3: Берем погоду
     weather = get_weather(lat, lon)
     
     # ШАГ 4: Ищем объекты вокруг
     sources = get_nearby_sources(lat, lon)
     
-    # ШАГ 5: Определяем, откуда дует ветер и какие объекты там находятся
+    # ШАГ 5: Анализ ветра
     wind_analysis = analyze_wind_and_sources(weather, sources)
     
-    # ШАГ 6: Делаем выводы о возможных загрязнителях
+    # ШАГ 6: Анализ загрязнения
     pollution_analysis = analyze_pollution(air_data, wind_analysis)
     
-    # ШАГ 7: Запрашиваем рекомендации у DeepSeek
+    # ШАГ 7: Рекомендации DeepSeek
     recommendations = get_deepseek_recommendations(
         air_data, weather, wind_analysis, pollution_analysis
     )
     
-    # ШАГ 8: Формируем полный ответ пользователю
+    # ШАГ 8: Формируем ответ
     response = format_full_response(
         air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name
     )
@@ -88,8 +85,8 @@ def get_air_quality_waqi(lat, lon):
                 'co': iaqi.get('co', {}).get('v', 0),
                 'o3': iaqi.get('o3', {}).get('v', 0)
             }
-    except:
-        pass
+    except Exception as e:
+        print(f"WAQI error: {e}")
     return None
 
 
@@ -109,8 +106,8 @@ def get_air_quality_openaq(lat, lon):
                 if param in components:
                     components[param] = value
             return components
-    except:
-        pass
+    except Exception as e:
+        print(f"OpenAQ error: {e}")
     return None
 
 
@@ -144,8 +141,9 @@ def get_weather(lat, lon):
             'wind_deg': data['wind'].get('deg', 0),
             'description': data['weather'][0]['description']
         }
-    except:
-        return None
+    except Exception as e:
+        print(f"Weather error: {e}")
+    return None
 
 
 def get_wind_direction_text(deg):
@@ -182,8 +180,6 @@ def get_nearby_sources(lat, lon):
           way["landuse"="industrial"](around:7000,{lat},{lon});
           way["man_made"="works"](around:7000,{lat},{lon});
           node["power"="plant"](around:7000,{lat},{lon});
-          way["industrial"="refinery"](around:7000,{lat},{lon});
-          way["industrial"="chemical"](around:7000,{lat},{lon});
         );
         out center tags;
         """
@@ -204,18 +200,15 @@ def get_nearby_sources(lat, lon):
             if tags.get('landuse') == 'landfill':
                 src_type = 'landfill'
                 name = tags.get('name', 'Свалка')
-            elif tags.get('industrial') == 'refinery':
-                src_type = 'refinery'
-                name = tags.get('name', 'НПЗ')
-            elif tags.get('industrial') == 'chemical':
-                src_type = 'chemical_plant'
-                name = tags.get('name', 'Химзавод')
             elif tags.get('power') == 'plant':
                 src_type = 'power_plant'
                 name = tags.get('name', 'ТЭЦ')
             elif tags.get('landuse') == 'industrial':
                 src_type = 'industrial'
                 name = tags.get('name', 'Промзона')
+            elif tags.get('man_made') == 'works':
+                src_type = 'chemical_plant'
+                name = tags.get('name', 'Завод')
             else:
                 continue
             
@@ -228,7 +221,8 @@ def get_nearby_sources(lat, lon):
             })
         
         return sources[:5]
-    except:
+    except Exception as e:
+        print(f"OSM error: {e}")
         return []
 
 
@@ -236,15 +230,16 @@ def get_nearby_sources(lat, lon):
 
 def analyze_wind_and_sources(weather, sources):
     """Определяем, какие объекты находятся с наветренной стороны"""
-    if not weather or not sources:
+    if not weather:
         return {
-            'wind_direction_text': get_wind_direction_text(weather['wind_deg']) if weather else "Неизвестно",
-            'wind_speed': weather['wind_speed'] if weather else 0,
+            'wind_direction_text': "Неизвестно",
+            'wind_speed': 0,
             'upwind_sources': [],
             'all_sources': sources
         }
     
     wind_deg = weather['wind_deg']
+    wind_speed = weather['wind_speed']
     upwind_sources = []
     
     for src in sources:
@@ -256,7 +251,7 @@ def analyze_wind_and_sources(weather, sources):
     
     return {
         'wind_direction_text': get_wind_direction_text(wind_deg),
-        'wind_speed': weather['wind_speed'],
+        'wind_speed': wind_speed,
         'upwind_sources': upwind_sources,
         'all_sources': sources
     }
@@ -319,19 +314,29 @@ def analyze_pollution(air_data, wind_analysis):
     if o3 > 100:
         elevated.append('O₃')
     
-    # Определяем возможные дополнительные загрязнители от объектов
+    # Сопутствующие элементы на основе повышенных загрязнителей
     possible_pollutants = []
+    
+    # От повышенных загрязнителей
+    if 'PM2.5' in elevated:
+        possible_pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
+    if 'NO₂' in elevated:
+        possible_pollutants.extend(['Бенз(а)пирен', 'Угарный газ'])
+    if 'SO₂' in elevated:
+        possible_pollutants.extend(['Сульфаты', 'Кислотные аэрозоли'])
+    if 'CO' in elevated:
+        possible_pollutants.extend(['Летучие органические соединения'])
+    
+    # От объектов с наветренной стороны
     for src in wind_analysis.get('upwind_sources', []):
-        if src['type'] == 'refinery':
-            possible_pollutants.extend(['Бензол', 'Толуол', 'Сероводород'])
-        elif src['type'] == 'chemical_plant':
-            possible_pollutants.extend(['Фталаты', 'Винилхлорид', 'Микропластик', 'Полимерная пыль'])
-        elif src['type'] == 'cement_plant':
-            possible_pollutants.extend(['Цементная пыль', 'Оксиды кальция'])
+        if src['type'] == 'landfill':
+            possible_pollutants.extend(['Метан', 'Сероводород', 'Аммиак'])
         elif src['type'] == 'power_plant':
             possible_pollutants.extend(['Зола', 'Диоксид серы', 'Оксиды азота'])
-        elif src['type'] == 'landfill':
-            possible_pollutants.extend(['Метан', 'Сероводород', 'Аммиак'])
+        elif src['type'] == 'chemical_plant':
+            possible_pollutants.extend(['Фталаты', 'Винилхлорид', 'Микропластик'])
+        elif src['type'] == 'industrial':
+            possible_pollutants.extend(['Промышленная пыль', 'Летучие соединения'])
     
     possible_pollutants = list(set(possible_pollutants))
     
@@ -354,6 +359,7 @@ def analyze_pollution(air_data, wind_analysis):
 def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
     """Запрашиваем рекомендации у DeepSeek"""
     if not DEEPSEEK_API_KEY:
+        print("DeepSeek API key not found")
         return None
     
     try:
@@ -362,17 +368,15 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
 Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 ДАННЫЕ О ВОЗДУХЕ:
-- PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³ (норма до 15)
-- PM10: {pollution_analysis.get('pm10', 0)} µg/m³ (норма до 45)
-- NO₂: {pollution_analysis.get('no2', 0)} µg/m³ (норма до 80)
-- SO₂: {pollution_analysis.get('so2', 0)} µg/m³ (норма до 50)
-- CO: {pollution_analysis.get('co', 0)} µg/m³ (норма до 5)
-- O₃: {pollution_analysis.get('o3', 0)} µg/m³ (норма до 100)
+- PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³
+- PM10: {pollution_analysis.get('pm10', 0)} µg/m³
+- NO₂: {pollution_analysis.get('no2', 0)} µg/m³
+- SO₂: {pollution_analysis.get('so2', 0)} µg/m³
 
 ПОГОДА:
-- Температура: {weather.get('temp', 0) if weather else 'Неизвестно'}°C
-- Влажность: {weather.get('humidity', 0) if weather else 'Неизвестно'}%
-- Ветер: {wind_analysis.get('wind_direction_text', 'Неизвестно')}, {wind_analysis.get('wind_speed', 0)} м/с
+- Температура: {weather.get('temp', 0) if weather else 'Нет данных'}°C
+- Влажность: {weather.get('humidity', 0) if weather else 'Нет данных'}%
+- Ветер: {wind_analysis.get('wind_direction_text', 'Нет данных')}, {wind_analysis.get('wind_speed', 0)} м/с
 
 ОБЪЕКТЫ С НАВЕТРЕННОЙ СТОРОНЫ:
 """
@@ -383,24 +387,18 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
             context += "- Не обнаружены\n"
         
         context += f"""
-ВОЗМОЖНЫЕ ДОПОЛНИТЕЛЬНЫЕ ЗАГРЯЗНИТЕЛИ:
+ВОЗМОЖНЫЕ СОПУТСТВУЮЩИЕ ЭЛЕМЕНТЫ:
 {', '.join(pollution_analysis.get('possible_pollutants', [])) if pollution_analysis.get('possible_pollutants') else 'Не определены'}
 
-ПОВЫШЕННЫЕ ЗАГРЯЗНИТЕЛИ:
-{', '.join(pollution_analysis.get('elevated', [])) if pollution_analysis.get('elevated') else 'Нет данных'}
-
 Дай рекомендации по:
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать, тренироваться
-2. ПИТАНИЕ: конкретные продукты и почему именно они (учитывай специфику загрязнителей)
-3. ПИТЬЕВОЙ РЕЖИМ: сколько пить, как часто
-4. ВИТАМИНЫ И ДОБАВКИ: какие конкретно и почему
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
+2. ПИТАНИЕ (конкретные продукты)
+3. ПИТЬЕВОЙ РЕЖИМ
+4. ВИТАМИНЫ
 
-ВАЖНО: Не давай общие рекомендации. Учитывай конкретные загрязнители и объекты.
-Если химический завод — рекомендуй продукты против фталатов и винилхлорида.
-Если ТЭЦ — продукты против SO₂ и золы.
+Учитывай конкретные загрязнители и сопутствующие элементы.
 """
         
-        # Вызываем DeepSeek API
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -411,7 +409,7 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
             "messages": [
                 {
                     "role": "system",
-                    "content": "Ты — эксперт по экологии, токсикологии и нутрициологии. Даёшь точные, научно обоснованные рекомендации."
+                    "content": "Ты — эксперт по экологии и нутрициологии."
                 },
                 {
                     "role": "user",
@@ -427,6 +425,8 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
         
         if 'choices' in data:
             return data['choices'][0]['message']['content']
+        else:
+            print(f"DeepSeek response: {data}")
     
     except Exception as e:
         print(f"DeepSeek error: {e}")
@@ -445,13 +445,13 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     if air_data:
         text += "📊 **Показатели:**\n"
         if pollution_analysis.get('pm25', 0) > 0:
-            text += f"• PM2.5: {pollution_analysis['pm25']:.1f} µg/m³ (мелкие частицы)\n"
+            text += f"• PM2.5: {pollution_analysis['pm25']:.1f} µg/m³\n"
         if pollution_analysis.get('pm10', 0) > 0:
-            text += f"• PM10: {pollution_analysis['pm10']:.1f} µg/m³ (крупные частицы)\n"
+            text += f"• PM10: {pollution_analysis['pm10']:.1f} µg/m³\n"
         if pollution_analysis.get('no2', 0) > 0:
-            text += f"• NO₂: {pollution_analysis['no2']:.1f} µg/m³ (диоксид азота)\n"
+            text += f"• NO₂: {pollution_analysis['no2']:.1f} µg/m³\n"
         if pollution_analysis.get('so2', 0) > 0:
-            text += f"• SO₂: {pollution_analysis['so2']:.1f} µg/m³ (диоксид серы)\n"
+            text += f"• SO₂: {pollution_analysis['so2']:.1f} µg/m³\n"
         text += "\n"
     
     # Погода
@@ -460,24 +460,27 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
         text += f"• Температура: {weather['temp']:.0f}°C\n"
         text += f"• Влажность: {weather['humidity']}%\n"
         text += f"• Ветер: {wind_analysis['wind_direction_text']}, {wind_analysis['wind_speed']} м/с\n\n"
+    else:
+        text += "💨 **Погода:** Нет данных\n\n"
     
     # Объекты с наветренной стороны
     if wind_analysis.get('upwind_sources'):
         text += "🏭 **Объекты с наветренной стороны:**\n"
         for src in wind_analysis['upwind_sources']:
             text += f"• {src['name']}\n"
-        
-        if pollution_analysis.get('possible_pollutants'):
-            text += f"\n⚠️ **Возможные дополнительные загрязнители:**\n"
-            text += ", ".join(pollution_analysis['possible_pollutants'])
-            text += "\n"
         text += "\n"
+    
+    # Сопутствующие элементы
+    if pollution_analysis.get('possible_pollutants'):
+        text += "⚠️ **Возможные сопутствующие элементы:**\n"
+        text += ", ".join(pollution_analysis['possible_pollutants'])
+        text += "\n\n"
     
     # Рекомендации ИИ
     if recommendations:
         text += f"{recommendations}\n\n"
     else:
-        text += "Не удалось получить рекомендации ИИ.\n\n"
+        text += "⚠️ _Не удалось получить рекомендации ИИ. Проверьте API ключ._\n\n"
     
     text += f"📡 Данные: {source_name or 'Unknown'}\n"
     text += f"---\n_Обновлено автоматически_"
