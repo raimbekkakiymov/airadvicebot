@@ -357,14 +357,16 @@ def analyze_pollution(air_data, wind_analysis):
 
 # ============ ШАГ 7: YANDEX GPT ============
 
-def get_yandex_gpt_recommendations(air_data, weather, wind_analysis, pollution_analysis):
-    """Запрашиваем рекомендации у YandexGPT"""
-    if not YANDEX_GPT_KEY or not YANDEX_FOLDER_ID:
+def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
+    """Запрашиваем рекомендации у DeepSeek"""
+    if not DEEPSEEK_API_KEY:
         return None
     
     try:
         # Формируем контекст
         context = f"""
+Ты — эксперт по экологии, токсикологии и нутрициологии.
+
 ДАННЫЕ О ВОЗДУХЕ:
 - PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³ (норма до 15)
 - PM10: {pollution_analysis.get('pm10', 0)} µg/m³ (норма до 45)
@@ -392,13 +394,6 @@ def get_yandex_gpt_recommendations(air_data, weather, wind_analysis, pollution_a
 
 ПОВЫШЕННЫЕ ЗАГРЯЗНИТЕЛИ:
 {', '.join(pollution_analysis.get('elevated', [])) if pollution_analysis.get('elevated') else 'Нет данных'}
-"""
-        
-        # Запрос к YandexGPT
-        prompt = f"""
-{context}
-
-Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 Дай рекомендации по:
 1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать, тренироваться
@@ -411,39 +406,36 @@ def get_yandex_gpt_recommendations(air_data, weather, wind_analysis, pollution_a
 Если ТЭЦ — продукты против SO₂ и золы.
 """
         
-        # Вызываем API
-        url = "https://llm.api.cloud.yandex.net/foundationModels/v1/completion"
+        # Вызываем DeepSeek API
+        url = "https://api.deepseek.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Api-Key {YANDEX_GPT_KEY}"
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
         }
         body = {
-            "modelUri": f"gpt://{YANDEX_FOLDER_ID}/yandexgpt/latest",
-            "completionOptions": {
-                "stream": False,
-                "temperature": 0.3,
-                "maxTokens": 2000
-            },
+            "model": "deepseek-chat",
             "messages": [
                 {
                     "role": "system",
-                    "text": "Ты — эксперт по экологии, токсикологии и нутрициологии."
+                    "content": "Ты — эксперт по экологии, токсикологии и нутрициологии. Даёшь точные, научно обоснованные рекомендации."
                 },
                 {
                     "role": "user",
-                    "text": prompt
+                    "content": context
                 }
-            ]
+            ],
+            "temperature": 0.3,
+            "max_tokens": 2000
         }
         
         response = requests.post(url, headers=headers, json=body, timeout=30)
         data = response.json()
         
-        if 'result' in data and 'alternatives' in data['result']:
-            return data['result']['alternatives'][0]['message']['text']
+        if 'choices' in data:
+            return data['choices'][0]['message']['content']
     
     except Exception as e:
-        print(f"YandexGPT error: {e}")
+        print(f"DeepSeek error: {e}")
     
     return None
 
