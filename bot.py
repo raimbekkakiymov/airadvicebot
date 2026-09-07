@@ -4,13 +4,11 @@ import requests
 import os
 import math
 from datetime import datetime
-import json
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-YANDEX_GPT_KEY = os.getenv("YANDEX_GPT_KEY")
-YANDEX_FOLDER_ID = os.getenv("YANDEX_FOLDER_ID")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -58,8 +56,8 @@ def handle_location(message):
     # ШАГ 6: Делаем выводы о возможных загрязнителях
     pollution_analysis = analyze_pollution(air_data, wind_analysis)
     
-    # ШАГ 7: Запрашиваем рекомендации у YandexGPT
-    recommendations = get_yandex_gpt_recommendations(
+    # ШАГ 7: Запрашиваем рекомендации у DeepSeek
+    recommendations = get_deepseek_recommendations(
         air_data, weather, wind_analysis, pollution_analysis
     )
     
@@ -250,8 +248,6 @@ def analyze_wind_and_sources(weather, sources):
     upwind_sources = []
     
     for src in sources:
-        # Проверяем, дует ли ветер СО СТОРОНЫ объекта
-        # Если ветер дует с севера (0°), а объект на севере — значит да
         wind_from = check_wind_from_source(wind_deg, src['bearing'])
         if wind_from:
             src_copy = src.copy()
@@ -268,8 +264,6 @@ def analyze_wind_and_sources(weather, sources):
 
 def check_wind_from_source(wind_deg, source_bearing):
     """Проверяем, дует ли ветер со стороны источника"""
-    # Ветер дует ИЗ направления wind_deg
-    # Если источник находится в этом направлении — значит ветер дует от него
     diff = abs(wind_deg - source_bearing)
     if diff > 180:
         diff = 360 - diff
@@ -285,7 +279,8 @@ def analyze_pollution(air_data, wind_analysis):
             'level': 'unknown',
             'emoji': '⚪',
             'elevated': [],
-            'possible_pollutants': []
+            'possible_pollutants': [],
+            'pm25': 0, 'pm10': 0, 'no2': 0, 'so2': 0, 'co': 0, 'o3': 0
         }
     
     pm25 = air_data.get('pm25', 0)
@@ -338,7 +333,6 @@ def analyze_pollution(air_data, wind_analysis):
         elif src['type'] == 'landfill':
             possible_pollutants.extend(['Метан', 'Сероводород', 'Аммиак'])
     
-    # Убираем дубликаты
     possible_pollutants = list(set(possible_pollutants))
     
     return {
@@ -355,7 +349,7 @@ def analyze_pollution(air_data, wind_analysis):
     }
 
 
-# ============ ШАГ 7: YANDEX GPT ============
+# ============ ШАГ 7: DEEPSEEK РЕКОМЕНДАЦИИ ============
 
 def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
     """Запрашиваем рекомендации у DeepSeek"""
