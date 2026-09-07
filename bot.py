@@ -6,31 +6,31 @@ from datetime import datetime
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
+WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")  # Только для погоды
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
-# ============ БАЗА ЗНАНИЙ (3 языка) ============
+# ============ ПЕРЕВОДЫ (RU/KZ/EN) ============
 TRANSLATIONS = {
     "ru": {
-        "welcome": "🌍 **Добро пожаловать в AirAdvice!**\n\nВыберите язык:",
+        "welcome": "🌍 **Добро пожаловать в AirAdvice!**\n\nОтправьте ваше местоположение, чтобы получить рекомендации.",
         "choose_lang": "Выберите язык / Тілді таңдаңыз / Choose language:",
         "send_location": "📍 Отправить местоположение",
         "air_quality": "Качество воздуха",
-        "no_data": "Не могу получить данные о воздухе. Проверьте подключение.",
+        "no_data": "Не могу получить данные о воздухе. Попробуйте позже.",
         "sport_title": "🏃‍♂️ **Активность:**",
         "food_title": "🥗 **Питание:**",
         "weather_title": "💨 **Погода:**",
         "wind": "Ветер",
         "temp": "Температура",
+        "humidity": "Влажность",
         "updated": "Обновлено автоматически",
+        "source_found": "Обнаружен объект рядом",
+        "data_source": "Источник данных",
         "clean": "Чистый воздух",
         "moderate": "Умеренное загрязнение",
         "high": "Повышенное загрязнение",
         "dangerous": "Опасный уровень",
-        "source_traffic": " (вероятный источник: транспорт)",
-        "source_industry": " (вероятный источник: промышленность/ТЭЦ)",
-        "source_burning": " (возможно горение отходов)",
         "sport_clean": "✅ Воздух чистый! Отличное время для пробежки или прогулки.",
         "sport_moderate": "🏃‍♂️ Можно гулять, но интенсивные тренировки лучше перенести в зал.",
         "sport_high": "⚠️ Лучше тренироваться только в помещении. На улице используйте маску.",
@@ -38,150 +38,197 @@ TRANSLATIONS = {
         "food_clean": "🥗 Обычный сбалансированный рацион. Сезонные овощи и фрукты.",
         "food_moderate": "🥦 Добавьте антиоксиданты: зелёный чай, яблоки, брокколи.",
         "food_high": "💊 Пейте больше воды. Добавьте витамин C и Омега-3. Исключите жареное.",
-        "food_dangerous": "🍵 Сорбенты (активированный уголь), кинза, морская капуста. Обильное питьё."
+        "food_dangerous": "🍵 Сорбенты (активированный уголь), кинза, морская капуста. Обильное питьё.",
+        "landfill": "Свалка",
+        "industrial": "Промзона",
+        "power_plant": "ТЭЦ",
+        "traffic": "Оживлённая трасса"
     },
     "kz": {
-        "welcome": "🌍 **AirAdvice-қа қош келдіңіз!**\n\nТілді таңдаңыз:",
+        "welcome": "🌍 **AirAdvice-қа қош келдіңіз!**\n\nҰсыныстар алу үшін орналасқан жеріңізді жіберіңіз.",
         "choose_lang": "Выберите язык / Тілді таңдаңыз / Choose language:",
         "send_location": "📍 Орналасқан жерді жіберу",
         "air_quality": "Ауа сапасы",
-        "no_data": "Ауа туралы деректерді ала алмадым. Байланысты тексеріңіз.",
+        "no_data": "Ауа туралы деректерді ала алмадым. Кейінірек көріңіз.",
         "sport_title": "🏃‍♂️ **Белсенділік:**",
         "food_title": "🥗 **Тамақтану:**",
         "weather_title": "💨 **Ауа райы:**",
         "wind": "Жел",
         "temp": "Температура",
+        "humidity": "Ылғалдылық",
         "updated": "Автоматты түрде жаңартылды",
+        "source_found": "Жақын жерде нысан табылды",
+        "data_source": "Дереккөз",
         "clean": "Таза ауа",
         "moderate": "Орташа ластану",
         "high": "Жоғары ластану",
         "dangerous": "Қауіпті деңгей",
-        "source_traffic": " (ықтимал көз: көлік)",
-        "source_industry": " (ықтимал көз: өнеркәсіп/ЖЭО)",
-        "source_burning": " (қалдықтардың жануы мүмкін)",
         "sport_clean": "✅ Ауа таза! Жүгіру немесе серуендеу үшін тамаша уақыт.",
         "sport_moderate": "🏃‍♂️ Серуендеуге болады, бірақ қарқынды жаттығуларды залға ауыстырған жөн.",
         "sport_high": "⚠️ Тек үй ішінде жаттығу ұсынылады. Сыртта маска қолданыңыз.",
         "sport_dangerous": "⛔ Қажетсіз сыртқа шықпаңыз. Спортпен тек үйде айналысыңыз.",
         "food_clean": "🥗 Кәдімгі теңдестірілген тамақтану. Маусымдық көкөністер мен жемістер.",
         "food_moderate": "🥦 Антиоксиданттар қосыңыз: көк шай, алма, брокколи.",
-        "food_high": "💊 Көбірек су ішіңіз. С дәрумені мен Омега-3 қосыңыз. Қуырылған тағамнан бас тартыңыз.",
-        "food_dangerous": "🍵 Сорбенттер (белсендірілген көмір), кинза, теңіз балдыры. Көп сұйықтық ішіңіз."
+        "food_high": "💊 Көбірек су ішіңіз. С дәрумені мен Омега-3 қосыңыз.",
+        "food_dangerous": "🍵 Сорбенттер (белсендірілген көмір), кинза, теңіз балдыры.",
+        "landfill": "Қоқыс үйіндісі",
+        "industrial": "Өнеркәсіп аймағы",
+        "power_plant": "ЖЭО",
+        "traffic": "Көлік жолы"
     },
     "en": {
-        "welcome": "🌍 **Welcome to AirAdvice!**\n\nChoose language:",
+        "welcome": "🌍 **Welcome to AirAdvice!**\n\nSend your location to get recommendations.",
         "choose_lang": "Выберите язык / Тілді таңдаңыз / Choose language:",
         "send_location": "📍 Send location",
         "air_quality": "Air Quality",
-        "no_data": "Cannot get air quality data. Check connection.",
+        "no_data": "Cannot get air quality data. Try later.",
         "sport_title": "🏃‍♂️ **Activity:**",
         "food_title": "🥗 **Nutrition:**",
         "weather_title": "💨 **Weather:**",
         "wind": "Wind",
         "temp": "Temperature",
+        "humidity": "Humidity",
         "updated": "Updated automatically",
+        "source_found": "Found nearby object",
+        "data_source": "Data source",
         "clean": "Clean air",
         "moderate": "Moderate pollution",
         "high": "High pollution",
         "dangerous": "Dangerous level",
-        "source_traffic": " (likely source: traffic)",
-        "source_industry": " (likely source: industry/power plant)",
-        "source_burning": " (possible waste burning)",
         "sport_clean": "✅ Air is clean! Great time for running or walking.",
         "sport_moderate": "🏃‍♂️ You can walk, but intense workouts better move to gym.",
         "sport_high": "⚠️ Better to exercise only indoors. Use mask outside.",
         "sport_dangerous": "⛔ Don't go outside without necessity. Sports only at home.",
         "food_clean": "🥗 Normal balanced diet. Seasonal vegetables and fruits.",
         "food_moderate": "🥦 Add antioxidants: green tea, apples, broccoli.",
-        "food_high": "💊 Drink more water. Add Vitamin C and Omega-3. Avoid fried food.",
-        "food_dangerous": "🍵 Sorbents (activated charcoal), cilantro, seaweed. Drink plenty."
+        "food_high": "💊 Drink more water. Add Vitamin C and Omega-3.",
+        "food_dangerous": "🍵 Sorbents (activated charcoal), cilantro, seaweed.",
+        "landfill": "Landfill",
+        "industrial": "Industrial zone",
+        "power_plant": "Power plant",
+        "traffic": "Busy road"
     }
 }
 
-# ============ ХРАНЕНИЕ ЯЗЫКОВ ПОЛЬЗОВАТЕЛЕЙ ============
+# ============ ХРАНЕНИЕ ЯЗЫКОВ ============
 user_languages = {}  # {user_id: "ru"}
 
-# ============ ФУНКЦИИ ============
+# ============ ФУНКЦИИ СБОРА ДАННЫХ ============
+
 def get_text(user_id, key):
     """Получаем текст на языке пользователя"""
     lang = user_languages.get(user_id, "ru")
     return TRANSLATIONS[lang].get(key, TRANSLATIONS["ru"][key])
 
 
-def get_pollution_type(air_data, user_id):
-    """Определяем тип загрязнения"""
-    if not air_data:
-        return {
-            "name": get_text(user_id, "no_data"),
-            "emoji": "⚪",
-            "sport": get_text(user_id, "no_data"),
-            "food": get_text(user_id, "no_data"),
-            "danger": "unknown"
-        }
-    
-    pm25 = air_data.get('pm25', 0)
-    no2 = air_data.get('no2', 0)
-    so2 = air_data.get('so2', 0)
-    
-    if pm25 <= 15:
-        level = "clean"
-        emoji = "🟢"
-        name = get_text(user_id, "clean")
-    elif pm25 <= 35:
-        level = "moderate"
-        emoji = "🟡"
-        name = get_text(user_id, "moderate")
-    elif pm25 <= 75:
-        level = "high"
-        emoji = "🟠"
-        name = get_text(user_id, "high")
-    else:
-        level = "dangerous"
-        emoji = "🔴"
-        name = get_text(user_id, "dangerous")
-    
-    # Источник загрязнения
-    if no2 > 80:
-        name += get_text(user_id, "source_traffic")
-    elif so2 > 50:
-        name += get_text(user_id, "source_industry")
-    
-    return {
-        "name": name,
-        "emoji": emoji,
-        "sport": get_text(user_id, f"sport_{level}"),
-        "food": get_text(user_id, f"food_{level}"),
-        "danger": level,
-        "pm25": pm25,
-        "pm10": air_data.get('pm10', 0),
-        "no2": no2,
-        "so2": so2,
-        "co": air_data.get('co', 0)
-    }
-
-
-def get_air_quality(lat, lon):
-    """Получаем данные о качестве воздуха"""
-    if not WEATHER_API_KEY:
-        return None
+def get_air_quality_waqi(lat, lon):
+    """Получаем данные с WAQI (бесплатный demo token)"""
     try:
-        url = f"http://api.openweathermap.org/data/2.5/air_pollution?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}"
-        response = requests.get(url, timeout=10)
+        url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token=demo"
+        response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         data = response.json()
-        components = data['list'][0]['components']
-        return {
-            'pm25': components.get('pm2_5', 0),
-            'pm10': components.get('pm10', 0),
-            'no2': components.get('no2', 0),
-            'so2': components.get('so2', 0),
-            'co': components.get('co', 0)
-        }
-    except:
-        return None
+        
+        if data.get('status') == 'ok' and data.get('data'):
+            iaqi = data['data'].get('iaqi', {})
+            result = {
+                'pm25': iaqi.get('pm25', {}).get('v', 0),
+                'pm10': iaqi.get('pm10', {}).get('v', 0),
+                'no2': iaqi.get('no2', {}).get('v', 0),
+                'so2': iaqi.get('so2', {}).get('v', 0),
+                'co': iaqi.get('co', {}).get('v', 0),
+                'o3': iaqi.get('o3', {}).get('v', 0)
+            }
+            return result
+    except Exception as e:
+        print(f"WAQI error: {e}")
+    return None
+
+
+def get_air_quality_openaq(lat, lon):
+    """Получаем данные с OpenAQ (бесплатно, без ключа)"""
+    try:
+        url = f"https://api.openaq.org/v2/latest?coordinates={lat},{lon}&radius=10000&limit=10"
+        headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        if data.get('results'):
+            components = {
+                'pm25': 0,
+                'pm10': 0,
+                'no2': 0,
+                'so2': 0,
+                'co': 0,
+                'o3': 0
+            }
+            
+            for measurement in data['results']:
+                param = measurement.get('parameter', '')
+                value = measurement.get('value', 0)
+                if param in components:
+                    components[param] = value
+            
+            return components
+    except Exception as e:
+        print(f"OpenAQ error: {e}")
+    return None
+
+
+def get_best_air_data(lat, lon):
+    """Пробуем все источники по очереди"""
+    
+    # 1. WAQI (бесплатный, глобальный)
+    air_data = get_air_quality_waqi(lat, lon)
+    if air_data and any(air_data.values()):
+        return air_data, "WAQI"
+    
+    # 2. OpenAQ (бесплатный, без ключа)
+    air_data = get_air_quality_openaq(lat, lon)
+    if air_data and any(air_data.values()):
+        return air_data, "OpenAQ"
+    
+    # 3. Ничего не нашли
+    return None, None
+
+
+def get_nearby_sources(lat, lon):
+    """Ищем ближайшие заводы, свалки через OpenStreetMap"""
+    try:
+        overpass_url = "https://overpass-api.de/api/interpreter"
+        query = f"""
+        [out:json];
+        (
+          way["landuse"="landfill"](around:5000,{lat},{lon});
+          way["landuse"="industrial"](around:5000,{lat},{lon});
+          way["man_made"="works"](around:5000,{lat},{lon});
+          node["power"="plant"](around:5000,{lat},{lon});
+        );
+        out center tags;
+        """
+        response = requests.post(overpass_url, data=query, timeout=15)
+        data = response.json()
+        
+        sources = []
+        for element in data.get('elements', []):
+            tags = element.get('tags', {})
+            
+            if tags.get('landuse') == 'landfill':
+                sources.append({'type': 'landfill', 'name': tags.get('name', 'Landfill')})
+            elif tags.get('landuse') == 'industrial':
+                sources.append({'type': 'industrial', 'name': tags.get('name', 'Industrial zone')})
+            elif tags.get('man_made') == 'works':
+                sources.append({'type': 'industrial', 'name': tags.get('name', 'Factory')})
+            elif tags.get('power') == 'plant':
+                sources.append({'type': 'power_plant', 'name': tags.get('name', 'Power plant')})
+        
+        return sources[:3]  # Максимум 3 объекта
+    except Exception as e:
+        print(f"OSM error: {e}")
+        return []
 
 
 def get_weather(lat, lon):
-    """Получаем данные о погоде"""
+    """Получаем погоду из OpenWeatherMap"""
     if not WEATHER_API_KEY:
         return None
     try:
@@ -190,11 +237,13 @@ def get_weather(lat, lon):
         data = response.json()
         return {
             'temp': data['main']['temp'],
+            'humidity': data['main']['humidity'],
             'wind_speed': data['wind']['speed'],
             'wind_deg': data['wind'].get('deg', 0),
             'description': data['weather'][0]['description']
         }
-    except:
+    except Exception as e:
+        print(f"Weather error: {e}")
         return None
 
 
@@ -215,41 +264,93 @@ def get_wind_direction(deg, lang="ru"):
     return directions_ru[index]
 
 
-# ============ КОМАНДА /start ============
+def get_seasonal_products(month):
+    """Возвращаем сезонные продукты по месяцу"""
+    if month in [12, 1, 2]:
+        return ["капуста", "морковь", "свёкла", "хурма"]
+    elif month in [3, 4, 5]:
+        return ["зелень", "редис", "щавель", "клубника"]
+    elif month in [6, 7, 8]:
+        return ["огурцы", "помидоры", "арбуз", "дыня"]
+    else:
+        return ["тыква", "яблоки", "облепиха", "гранат"]
+
+
+def analyze_air_quality(air_data, user_id):
+    """Анализируем качество воздуха"""
+    if not air_data:
+        return {
+            "name": get_text(user_id, "no_data"),
+            "emoji": "⚪",
+            "sport": get_text(user_id, "no_data"),
+            "food": get_text(user_id, "no_data"),
+            "danger": "unknown",
+            "pm25": 0, "pm10": 0, "no2": 0, "so2": 0
+        }
+    
+    pm25 = air_data.get('pm25', 0)
+    pm10 = air_data.get('pm10', 0)
+    no2 = air_data.get('no2', 0)
+    so2 = air_data.get('so2', 0)
+    
+    if pm25 <= 15:
+        level = "clean"
+        emoji = "🟢"
+    elif pm25 <= 35:
+        level = "moderate"
+        emoji = "🟡"
+    elif pm25 <= 75:
+        level = "high"
+        emoji = "🟠"
+    else:
+        level = "dangerous"
+        emoji = "🔴"
+    
+    return {
+        "name": get_text(user_id, level),
+        "emoji": emoji,
+        "sport": get_text(user_id, f"sport_{level}"),
+        "food": get_text(user_id, f"food_{level}"),
+        "danger": level,
+        "pm25": pm25,
+        "pm10": pm10,
+        "no2": no2,
+        "so2": so2
+    }
+
+
+# ============ КОМАНДЫ ============
+
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     user_id = message.from_user.id
-    user_languages[user_id] = "ru"  # По умолчанию русский
+    user_languages[user_id] = "ru"
     
-    # Кнопки выбора языка
     markup = types.InlineKeyboardMarkup(row_width=3)
-    ru_btn = types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru")
-    kz_btn = types.InlineKeyboardButton("🇰🇿 Қазақша", callback_data="lang_kz")
-    en_btn = types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
-    markup.add(ru_btn, kz_btn, en_btn)
+    markup.add(
+        types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+        types.InlineKeyboardButton("🇰🇿 Қазақша", callback_data="lang_kz"),
+        types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
+    )
     
     bot.send_message(
         message.chat.id,
-        "🌍 **AirAdvice**\n\nВыберите язык / Тілді таңдаңыз / Choose language:",
+        "🌍 **AirAdvice**\n\n" + get_text(user_id, "choose_lang"),
         reply_markup=markup,
         parse_mode='Markdown'
     )
 
 
-# ============ ОБРАБОТКА ВЫБОРА ЯЗЫКА ============
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
 def handle_language(call):
     user_id = call.from_user.id
     lang = call.data.split('_')[1]
     user_languages[user_id] = lang
     
-    # Убираем кнопки
     bot.answer_callback_query(call.id)
     
-    # Показываем кнопку геолокации
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    geo_button = types.KeyboardButton(get_text(user_id, "send_location"), request_location=True)
-    markup.add(geo_button)
+    markup.add(types.KeyboardButton(get_text(user_id, "send_location"), request_location=True))
     
     bot.send_message(
         call.message.chat.id,
@@ -259,7 +360,6 @@ def handle_language(call):
     )
 
 
-# ============ ОБРАБОТКА ГЕОЛОКАЦИИ ============
 @bot.message_handler(content_types=['location'])
 def handle_location(message):
     user_id = message.from_user.id
@@ -268,28 +368,57 @@ def handle_location(message):
     
     bot.send_chat_action(message.chat.id, 'typing')
     
-    air_data = get_air_quality(lat, lon)
+    # 1. Получаем данные о воздухе
+    air_data, source_name = get_best_air_data(lat, lon)
+    
+    # 2. Получаем погоду
     weather = get_weather(lat, lon)
-    result = get_pollution_type(air_data, user_id)
+    
+    # 3. Ищем ближайшие источники загрязнения
+    sources = get_nearby_sources(lat, lon)
+    
+    # 4. Анализируем
+    result = analyze_air_quality(air_data, user_id)
+    
+    # 5. Сезонные продукты
+    current_month = datetime.now().month
+    seasonal = get_seasonal_products(current_month)
     
     # Формируем ответ
-    lang = user_languages.get(user_id, "ru")
     text = f"{result['emoji']} **{get_text(user_id, 'air_quality')}: {result['name']}**\n\n"
     
-    if 'pm25' in result:
-        text += f"📊 **PM2.5:** {result['pm25']:.1f} µg/m³\n"
-        text += f"**PM10:** {result['pm10']:.1f} µg/m³\n"
-        text += f"**NO₂:** {result['no2']:.1f} µg/m³\n\n"
+    # Показатели
+    if result['pm25'] > 0:
+        text += "📊 **Показатели:**\n"
+        text += f"• PM2.5: {result['pm25']:.1f} µg/m³\n"
+        text += f"• PM10: {result['pm10']:.1f} µg/m³\n"
+        text += f"• NO₂: {result['no2']:.1f} µg/m³\n"
+        text += f"• SO₂: {result['so2']:.1f} µg/m³\n\n"
     
+    # Погода
     if weather:
-        wind_dir = get_wind_direction(weather['wind_deg'], lang)
+        wind_dir = get_wind_direction(weather['wind_deg'], user_languages.get(user_id, "ru"))
         text += f"{get_text(user_id, 'weather_title')}\n"
-        text += f"{get_text(user_id, 'wind')}: {wind_dir}, {weather['wind_speed']} м/с\n"
-        text += f"{get_text(user_id, 'temp')}: {weather['temp']}°C\n\n"
+        text += f"{get_text(user_id, 'temp')}: {weather['temp']:.0f}°C\n"
+        text += f"{get_text(user_id, 'humidity')}: {weather['humidity']}%\n"
+        text += f"{get_text(user_id, 'wind')}: {wind_dir}, {weather['wind_speed']} м/с\n\n"
     
+    # Ближайшие источники загрязнения
+    if sources:
+        text += f"🏭 **{get_text(user_id, 'source_found')}:**\n"
+        for src in sources:
+            src_type = get_text(user_id, src['type'])
+            text += f"• {src_type}: {src['name']}\n"
+        text += "\n"
+    
+    # Рекомендации
     text += f"{get_text(user_id, 'sport_title')}\n{result['sport']}\n\n"
-    text += f"{get_text(user_id, 'food_title')}\n{result['food']}\n\n"
-    text += f"---\n_{get_text(user_id, 'updated')}_"
+    text += f"{get_text(user_id, 'food_title')}\n{result['food']}\n"
+    
+    # Сезонные продукты
+    text += f"\n🛒 **{get_text(user_id, 'data_source')}:** {source_name or 'Unknown'}\n"
+    
+    text += f"\n---\n_{get_text(user_id, 'updated')}_"
     
     bot.send_message(message.chat.id, text, parse_mode='Markdown')
 
@@ -297,7 +426,8 @@ def handle_location(message):
 # ============ ЗАПУСК ============
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        print("❌ BOT_TOKEN не найден")
+        print("❌ Ошибка: BOT_TOKEN не найден")
         exit(1)
+    
     print("✅ Бот запущен...")
     bot.polling(none_stop=True)
