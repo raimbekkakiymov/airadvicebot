@@ -680,7 +680,15 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     return msg
 
 def safe_send_message(chat_id, text):
-    # ==========================================
+    try:
+        bot.send_message(chat_id, text, parse_mode='Markdown')
+    except:
+        try:
+            bot.send_message(chat_id, text, parse_mode=None)
+        except Exception as e:
+            logging.error(f"Ошибка отправки: {e}")
+            
+# ==========================================
 # 9. ОБРАБОТЧИКИ
 # ==========================================
 
