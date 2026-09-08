@@ -287,7 +287,7 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     lang_name = lang_names.get(lang, 'Русский')
     
     try:
-        prompt = f"""
+                prompt = f"""
 Ты — эксперт по экологии и промышленной безопасности.
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
@@ -296,30 +296,24 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
 
 ТЕКУЩИЕ ПОКАЗАТЕЛИ ВОЗДУХА:
 - AQI: {air_data.get('aqi', 'Нет данных') if air_data else 'Нет данных'}
-- Мелкие частицы: {air_data.get('pm25', 'Нет данных') if air_data else 'Нет данных'} µg/m3
-- Крупная пыль: {air_data.get('pm10', 'Нет данных') if air_data else 'Нет данных'} µg/m3
-- Диоксид азота: {air_data.get('no2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
-- Диоксид серы: {air_data.get('so2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы (SO2): {air_data.get('so2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота (NO2): {air_data.get('no2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
 
-ЗАДАЧА:
-1. Используя свои знания о географии и промышленности, определи, какие промышленные объекты могут находиться с НАВЕТРЕННОЙ стороны (ветер дует ОТТУДА к пользователю)
-2. Сопоставь показатели воздуха с возможными источниками
-3. Сделай вывод: какие сопутствующие элементы могут быть в воздухе
+ВАЖНО: Используй свои знания о географии. Даже если не знаешь точное название объекта, предположи, что может находиться в этом направлении (НПЗ, ТЭЦ, свалка, химзавод и т.д.) и какие элементы они выделяют.
 
-ФОРМАТ ОТВЕТА:
-🏭 **Вероятные источники:**
-• [Название объекта] — [что выделяет]
+ФОРМАТ ОТВЕТА (обязательно):
+🏭 Вероятные источники:
+• [Название] — [что выделяет]
 
-⚠️ **Сопутствующие элементы:**
-• [Элемент 1] — [опасность]
-• [Элемент 2] — [опасность]
+⚠️ Сопутствующие элементы:
+• [Элемент] — [опасность]
 
 Ответь на языке: {lang_name}
 """
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        lang_names = {     'ru': 'Русский',     'kk': 'Казахский (Қазақша)',     'en': 'English' } lang_name = lang_names.get(lang, 'Русский')  body = {     "systemInstruction": {         "parts": [{"text": f"Ты отвечаешь ТОЛЬКО на языке: {lang_name}. Все названия продуктов, витаминов, активности — только на {lang_name}. Не используй другие языки."}]     },     "contents": [{"parts": [{"text": prompt}]}] }
         
         r = requests.post(url, headers=headers, json=body, timeout=10)
         data = r.json()
@@ -382,7 +376,7 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
         prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        lang_names = {     'ru': 'Русский',     'kk': 'Казахский (Қазақша)',     'en': 'English' } lang_name = lang_names.get(lang, 'Русский')  body = {     "systemInstruction": {         "parts": [{"text": f"Ты отвечаешь ТОЛЬКО на языке: {lang_name}. Все названия продуктов, витаминов, активности — только на {lang_name}. Не используй другие языки."}]     },     "contents": [{"parts": [{"text": prompt}]}] }
         r = requests.post(url, headers=headers, json=body, timeout=8)
         data = r.json()
         if 'candidates' in data and data['candidates']:
