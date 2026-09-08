@@ -133,55 +133,64 @@ def get_best_air_data(lat, lon):
     try:
         token = WAQI_API_KEY or "demo"
         url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={token}"
-            r = requests.get(url, timeout=10).json()
-            if r.get('status') == 'ok':
-                data = r['data']
-                iaqi = data.get('iaqi', {})
-                return {
-                    'aqi': data.get('aqi'),
-                    'pm25': iaqi.get('pm25', {}).get('v'),
-                    'pm10': iaqi.get('pm10', {}).get('v'),
-                    'no2': iaqi.get('no2', {}).get('v'),
-                    'so2': iaqi.get('so2', {}).get('v'),
-                    'co': iaqi.get('co', {}).get('v'),
-                    'o3': iaqi.get('o3', {}).get('v')
-                }, "WAQI"
-        except Exception as e:
-            logging.error(f"Ошибка WAQI: {e}")
-
-    try:
-        url = f"https://api.openaq.org/v2/latest?coordinates={lat},{lon}&radius=25000"
-        r = requests.get(url, timeout=10).json()
-        if r.get('results'):
-            measurements = r['results'][0].get('measurements', [])
-            res = {}
-            for m in measurements:
-                if m['parameter'] in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
-                    res[m['parameter']] = m['value']
-            return res, "OpenAQ"
+        r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        data = r.json()
+        
+        if data.get('status') == 'ok' and data.get('data'):
+            iaqi = data['data'].get('iaqi', {})
+            result = {
+                'aqi': data['data'].get('aqi'),
+                'pm25': iaqi.get('pm25', {}).get('v'),
+                'pm10': iaqi.get('pm10', {}).get('v'),
+                'no2': iaqi.get('no2', {}).get('v'),
+                'so2': iaqi.get('so2', {}).get('v'),
+                'co': iaqi.get('co', {}).get('v'),
+                'o3': iaqi.get('o3', {}).get('v')
+            }
+            result = {k: v for k, v in result.items() if v is not None}
+            if result.get('aqi') or result.get('pm25'):
+                return result, "WAQI"
     except Exception as e:
-        logging.error(f"Ошибка OpenAQ: {e}")
-
+        logging.error(f"WAQI error: {e}")
+    
+    # OpenAQ fallback
+    try:
+        url = f"https://api.openaq.org/v2/latest?coordinates={lat},{lon}&radius=25000&limit=10"
+        headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        data = r.json()
+        
+        if data.get('results'):
+            components = {}
+            for measurement in data['results']:
+                param = measurement.get('parameter', '')
+                value = measurement.get('value', 0)
+                if param in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
+                    components[param] = value
+            
+            if components:
+                pm25 = components.get('pm25', 0)
+                if pm25:
+                    components['aqi'] = calculate_aqi_from_pm25(pm25)
+                return components, "OpenAQ"
+    except Exception as e:
+        logging.error(f"OpenAQ error: {e}")
+    
     return None, "None"
 
-def get_nearby_sources(lat, lon):
-    overpass_urls = [
-        "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter"
-    ]
-    
-    query = f"""
-    [out:json][timeout:15];
-    (
-      node["landuse"="industrial"](around:7000,{lat:.6f},{lon:.6f});
-      way["landuse"="industrial"](around:7000,{lat:.6f},{lon:.6f});
-      node["man_made"="chimney"](around:7000,{lat:.6f},{lon:.6f});
-      node["amenity"="waste_disposal"](around:7000,{lat:.6f},{lon:.6f});
-      way["landuse"="landfill"](around:7000,{lat:.6f},{lon:.6f});
-      way["landuse"="quarry"](around:7000,{lat:.6f},{lon:.6f});
-    );
-    out center;
-    """
+
+def calculate_aqi_from_pm25(pm25):
+    """Приблизительный расчет AQI из PM2.5"""
+    if pm25 <= 12:
+        return round((50 / 12) * pm25)
+    elif pm25 <= 35.4:
+        return round(((100 - 51) / (35.4 - 12.1)) * (pm25 - 12.1) + 51)
+    elif pm25 <= 55.4:
+        return round(((150 - 101) / (55.4 - 35.5)) * (pm25 - 35.5) + 101)
+    elif pm25 <= 150.4:
+        return round(((200 - 151) / (150.4 - 55.5)) * (pm25 - 55.5) + 151)
+    else:
+        return 200
 
     for url in overpass_urls:
         try:
