@@ -346,7 +346,7 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
     pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
-    lang_names = {
+        lang_names = {
         'ru': 'Русский',
         'kk': 'Казахский (Қазақша)',
         'en': 'English'
@@ -378,7 +378,8 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 
 4. ВИТАМИНЫ: конкретные витамины и зачем
 
-ВАЖНО: Отвечай на языке: {lang_name}
+ВАЖНО: Отвечай ТОЛЬКО на языке: {lang_name}
+Не используй другие языки. Весь ответ должен быть на {lang_name}.
 """
     return prompt
 
