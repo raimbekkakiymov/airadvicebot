@@ -494,7 +494,7 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
         
         print("📤 Отправляю запрос к Gemini...", flush=True)
         
-        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         body = {
             "contents": [{"parts": [{"text": context}]}]
