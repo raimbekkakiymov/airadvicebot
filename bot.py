@@ -51,14 +51,14 @@ def load_user_languages():
             with open(USER_LANG_FILE, 'r', encoding='utf-8') as f:
                 user_languages = json.load(f)
         except Exception as e:
-            logging.error(f"Ошибка загрузки user_languages: {e}")
+            logging.error(f"Ошибка загрузки: {e}")
 
 def save_user_languages():
     try:
         with open(USER_LANG_FILE, 'w', encoding='utf-8') as f:
             json.dump(user_languages, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logging.error(f"Ошибка сохранения user_languages: {e}")
+        logging.error(f"Ошибка сохранения: {e}")
 
 # ==========================================
 # 3. PID LOCK
@@ -70,11 +70,10 @@ def acquire_pid_lock():
             with open(PID_FILE, 'r') as f:
                 old_pid = int(f.read().strip())
             os.kill(old_pid, 0)
-            print(f"❌ Бот уже запущен с PID {old_pid}. Завершение работы.", flush=True)
+            print(f"Бот уже запущен с PID {old_pid}. Выход.", flush=True)
             sys.exit(1)
         except (OSError, ValueError):
             pass
-
     with open(PID_FILE, 'w') as f:
         f.write(str(os.getpid()))
 
@@ -91,10 +90,7 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
     dlon = lon2 - lon1
     x = math.sin(dlon) * math.cos(lat2)
     y = math.cos(lat1) * math.sin(lat2) - math.sin(lat1) * math.cos(lat2) * math.cos(dlon)
-    initial_bearing = math.atan2(x, y)
-    initial_bearing = math.degrees(initial_bearing)
-    compass_bearing = (initial_bearing + 360) % 360
-    return compass_bearing
+    return (math.degrees(math.atan2(x, y)) + 360) % 360
 
 def check_wind_from_source(wind_deg, source_bearing, tolerance=25):
     diff = abs(wind_deg - source_bearing)
@@ -103,7 +99,6 @@ def check_wind_from_source(wind_deg, source_bearing, tolerance=25):
     return diff <= tolerance
 
 def get_wind_direction_text(deg, lang='ru'):
-    """Переводим градусы в направление ветра на нужном языке"""
     directions_ru = ["Северный", "Северо-восточный", "Восточный", "Юго-восточный",
                      "Южный", "Юго-западный", "Западный", "Северо-западный"]
     directions_kk = ["Солтүстік", "Солтүстік-шығыс", "Шығыс", "Оңтүстік-шығыс",
@@ -156,11 +151,11 @@ def get_best_air_data(lat, lon):
             result = {
                 'aqi': data['data'].get('aqi'),
                 'pm25': iaqi.get('pm25', {}).get('v'),
-                'Крупная пыль (PM10)': iaqi.get('Крупная пыль (PM10)', {}).get('v'),
-                'Диоксид азота': iaqi.get('Диоксид азота', {}).get('v'),
-                'Диоксид серы': iaqi.get('Диоксид серы', {}).get('v'),
+                'pm10': iaqi.get('pm10', {}).get('v'),
+                'no2': iaqi.get('no2', {}).get('v'),
+                'so2': iaqi.get('so2', {}).get('v'),
                 'co': iaqi.get('co', {}).get('v'),
-                'Озон': iaqi.get('Озон', {}).get('v')
+                'o3': iaqi.get('o3', {}).get('v')
             }
             result = {k: v for k, v in result.items() if v is not None}
             if result.get('aqi') or result.get('pm25'):
@@ -180,7 +175,7 @@ def get_best_air_data(lat, lon):
             for measurement in data['results']:
                 param = measurement.get('parameter', '')
                 value = measurement.get('value', 0)
-                if param in ['pm25', 'Крупная пыль (PM10)', 'Диоксид азота', 'Диоксид серы', 'co', 'Озон']:
+                if param in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
                     components[param] = value
             
             if components:
@@ -304,18 +299,18 @@ def get_pollutants_for_sources(active_sources, air_data):
     
     if air_data:
         pm25 = air_data.get('pm25', 0) or 0
-        Крупная пыль (PM10) = air_data.get('Крупная пыль (PM10)', 0) or 0
-        Диоксид азота = air_data.get('Диоксид азота', 0) or 0
-        Диоксид серы = air_data.get('Диоксид серы', 0) or 0
+        pm10 = air_data.get('pm10', 0) or 0
+        no2 = air_data.get('no2', 0) or 0
+        so2 = air_data.get('so2', 0) or 0
         co = air_data.get('co', 0) or 0
         
         if pm25 > 35:
             pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
-        if Крупная пыль (PM10) > 60:
+        if pm10 > 60:
             pollutants.extend(['Дорожная пыль', 'Строительная пыль'])
-        if Диоксид азота > 80:
+        if no2 > 80:
             pollutants.extend(['Бенз(а)пирен', 'Угарный газ'])
-        if Диоксид серы > 50:
+        if so2 > 50:
             pollutants.extend(['Сульфаты', 'Кислотные аэрозоли'])
         if co > 5:
             pollutants.extend(['Летучие органические соединения'])
@@ -351,11 +346,10 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
     pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
-    # Полное название языка для ИИ
     lang_names = {
-        'ru': 'Русский (Russian)',
-        'kk': 'Казахский (Kazakh, Қазақша)',
-        'en': 'Английский (English)'
+        'ru': 'Русский',
+        'kk': 'Казахский (Қазақша)',
+        'en': 'English'
     }
     lang_name = lang_names.get(lang, 'Русский')
     
@@ -365,9 +359,9 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
 - Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- Крупная пыль (PM10): {air_data.get('Крупная пыль (PM10)') if air_data else 'Нет данных'} µg/m3
-- Диоксид азота: {air_data.get('Диоксид азота') if air_data else 'Нет данных'} µg/m3
-- Диоксид серы: {air_data.get('Диоксид серы') if air_data else 'Нет данных'} µg/m3
+- Крупная пыль (PM10): {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота (NO2): {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы (SO2): {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
@@ -385,32 +379,6 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 4. ВИТАМИНЫ: конкретные витамины и зачем
 
 ВАЖНО: Отвечай на языке: {lang_name}
-"""
-    return prompt
-
-ДАННЫЕ:
-- AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- Крупная пыль (PM10): {air_data.get('Крупная пыль (PM10)') if air_data else 'Нет данных'} µg/m3
-- Диоксид азота: {air_data.get('Диоксид азота') if air_data else 'Нет данных'} µg/m3
-- Диоксид серы: {air_data.get('Диоксид серы') if air_data else 'Нет данных'} µg/m3
-- Температура: {weather.get('temp') if weather else 'Н/Д'}°C
-- Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
-- Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
-- Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
-- Сопутствующие элементы: {', '.join(pollutants) if pollutants else 'Не определены'}
-
-Дай РАЗВЕРНУТЫЕ рекомендации:
-
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать? Чем заменить?
-
-2. ПИТАНИЕ: 5-7 конкретных продуктов, почему они помогают против данных загрязнителей
-
-3. ПИТЬЕВОЙ РЕЖИМ: сколько и как часто пить
-
-4. ВИТАМИНЫ: конкретные витамины и зачем
-
-Ответь на языке: {lang}
 """
     return prompt
 
@@ -496,28 +464,71 @@ def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_a
     if 'Оксиды азота' in pollutants:
         vitamins.append("💊 Витамин E")
     
-    activity = {
-        1: "✅ Можно бегать, гулять, тренироваться на улице",
-        2: "🏃‍♂️ Можно гулять, но интенсивный бег лучше перенести в зал",
-        3: "⚠️ Лучше тренироваться в помещении. На улице — маска",
-        4: "⛔ Только в помещении. Окна закрыты",
-        5: "🚫 Оставайтесь дома. Никаких уличных тренировок"
-    }.get(risk_level, "✅ Можно гулять")
+    activity_map = {
+        'ru': {
+            1: "✅ Можно бегать, гулять, тренироваться на улице",
+            2: "🏃‍♂️ Можно гулять, но интенсивный бег лучше перенести в зал",
+            3: "⚠️ Лучше тренироваться в помещении. На улице — маска",
+            4: "⛔ Только в помещении. Окна закрыты",
+            5: "🚫 Оставайтесь дома. Никаких уличных тренировок"
+        },
+        'kk': {
+            1: "✅ Жүгіруге, серуендеуге, далада жаттығуға болады",
+            2: "🏃‍♂️ Серуендеуге болады, бірақ қарқынды жүгіруді залға ауыстырған жөн",
+            3: "⚠️ Үй ішінде жаттығу ұсынылады. Далада — маска",
+            4: "⛔ Тек үй ішінде. Терезелер жабық",
+            5: "🚫 Үйде болыңыз. Далада жаттығуға болмайды"
+        },
+        'en': {
+            1: "✅ You can run, walk, train outdoors",
+            2: "🏃‍♂️ You can walk, but intense running better move to gym",
+            3: "⚠️ Better to exercise indoors. Wear mask outside",
+            4: "⛔ Indoor only. Windows closed",
+            5: "🚫 Stay home. No outdoor training"
+        }
+    }
     
-    water = {
-        1: "💧 1.5-2 литра в день",
-        2: "💧 2 литра в день",
-        3: "💧 2-2.5 литра, каждые 30 минут по глотку",
-        4: "💧 2.5-3 литра, тёплая вода",
-        5: "💧 3+ литра, обязательно тёплая"
-    }.get(risk_level, "💧 2 литра в день")
+    water_map = {
+        'ru': {
+            1: "💧 1.5-2 литра в день",
+            2: "💧 2 литра в день",
+            3: "💧 2-2.5 литра, каждые 30 минут по глотку",
+            4: "💧 2.5-3 литра, тёплая вода",
+            5: "💧 3+ литра, обязательно тёплая"
+        },
+        'kk': {
+            1: "💧 Күніне 1.5-2 литр",
+            2: "💧 Күніне 2 литр",
+            3: "💧 2-2.5 литр, әр 30 минут сайын бір жұтым",
+            4: "💧 2.5-3 литр, жылы су",
+            5: "💧 3+ литр, міндетті түрде жылы"
+        },
+        'en': {
+            1: "💧 1.5-2 liters per day",
+            2: "💧 2 liters per day",
+            3: "💧 2-2.5 liters, sip every 30 minutes",
+            4: "💧 2.5-3 liters, warm water",
+            5: "💧 3+ liters, must be warm"
+        }
+    }
     
-    msg = f"🏃‍♂️ **Физическая активность:**\n{activity}\n\n"
-    msg += f"🥗 **Питание:**\n"
+    activity = activity_map.get(lang, activity_map['ru']).get(risk_level, "✅ OK")
+    water = water_map.get(lang, water_map['ru']).get(risk_level, "💧 2L/day")
+    
+    titles_rule = {
+        'ru': {'activity': "Физическая активность", 'food': "Питание", 'water': "Питьевой режим", 'vitamins': "Витамины"},
+        'kk': {'activity': "Дене белсенділігі", 'food': "Тамақтану", 'water': "Су ішу режимі", 'vitamins': "Дәрумендер"},
+        'en': {'activity': "Physical Activity", 'food': "Nutrition", 'water': "Water Intake", 'vitamins': "Vitamins"}
+    }
+    
+    tr = titles_rule.get(lang, titles_rule['ru'])
+    
+    msg = f"🏃‍♂️ **{tr['activity']}:**\n{activity}\n\n"
+    msg += f"🥗 **{tr['food']}:**\n"
     for food in recommended_foods:
         msg += f"{food}\n"
-    msg += f"\n💧 **Питьевой режим:**\n{water}\n\n"
-    msg += f"💊 **Витамины:**\n"
+    msg += f"\n💧 **{tr['water']}:**\n{water}\n\n"
+    msg += f"💊 **{tr['vitamins']}:**\n"
     for vit in vitamins:
         msg += f"{vit}\n"
     
@@ -538,7 +549,26 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
 # ==========================================
 
 def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang='ru'):
-    """Формируем ответ на языке пользователя"""
+    pollutant_names = {
+        'ru': {
+            'pm25': "Мелкие частицы (PM2.5)",
+            'pm10': "Крупная пыль (PM10)",
+            'no2': "Диоксид азота",
+            'so2': "Диоксид серы"
+        },
+        'kk': {
+            'pm25': "Ұсақ бөлшектер (PM2.5)",
+            'pm10': "Ірі шаң (PM10)",
+            'no2': "Азот диоксиді",
+            'so2': "Күкірт диоксиді"
+        },
+        'en': {
+            'pm25': "Fine particles (PM2.5)",
+            'pm10': "Coarse dust (PM10)",
+            'no2': "Nitrogen dioxide",
+            'so2': "Sulfur dioxide"
+        }
+    }
     
     titles = {
         'ru': {
@@ -589,6 +619,7 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     }
     
     t = titles.get(lang, titles['ru'])
+    pn = pollutant_names.get(lang, pollutant_names['ru'])
     
     msg = f"🌍 **{t['report']}**\n"
     msg += f"───────────────────────\n\n"
@@ -596,16 +627,16 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     if air_data:
         aqi = air_data.get('aqi', t['no_data'])
         pm25 = air_data.get('pm25', t['no_data'])
-        Крупная пыль (PM10) = air_data.get('Крупная пыль (PM10)', t['no_data'])
-        Диоксид азота = air_data.get('Диоксид азота', t['no_data'])
-        Диоксид серы = air_data.get('Диоксид серы', t['no_data'])
+        pm10 = air_data.get('pm10', t['no_data'])
+        no2 = air_data.get('no2', t['no_data'])
+        so2 = air_data.get('so2', t['no_data'])
         
         msg += f"📊 **{t['air_quality']}:**\n"
         msg += f"• AQI: {aqi}\n"
-        msg += f"• Мелкие частицы (PM2.5): {pm25} µg/m3\n"
-        msg += f"• Крупная пыль (PM10): {Крупная пыль (PM10)} µg/m3\n"
-        msg += f"• Диоксид азота: {Диоксид азота} µg/m3\n"
-        msg += f"• Диоксид серы: {Диоксид серы} µg/m3\n"
+        msg += f"• {pn['pm25']}: {pm25} µg/m3\n"
+        msg += f"• {pn['pm10']}: {pm10} µg/m3\n"
+        msg += f"• {pn['no2']}: {no2} µg/m3\n"
+        msg += f"• {pn['so2']}: {so2} µg/m3\n"
         msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
         msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
@@ -657,122 +688,4 @@ def safe_send_message(chat_id, text):
         except Exception as e:
             logging.error(f"Ошибка отправки: {e}")
 
-# ==========================================
-# 9. ОБРАБОТЧИКИ
-# ==========================================
-
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    user_ids.add(message.chat.id)
-    lang_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    lang_markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
-    bot.send_message(
-        message.chat.id,
-        "Выберите язык / Тілді таңдаңыз / Choose language:",
-        reply_markup=lang_markup
-    )
-
-@bot.message_handler(func=lambda m: m.text in ['🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English'])
-def set_language(message):
-    if 'Русский' in message.text: lang = 'ru'
-    elif 'Қазақша' in message.text: lang = 'kk'
-    else: lang = 'en'
-
-    user_languages[str(message.chat.id)] = lang
-    save_user_languages()
-
-    loc_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_text = {
-        'ru': "📍 Отправить локацию",
-        'kk': "📍 Орынды жіберу",
-        'en': "📍 Send Location"
-    }.get(lang, "📍 Отправить локацию")
-
-    btn = types.KeyboardButton(btn_text, request_location=True)
-    loc_markup.add(btn)
-
-    confirm_msg = {
-        'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы проверить воздух.",
-        'kk': "Тіл сақталды! Ауа сапасын тексеру үшін төмендегі батырманы басыңыз.",
-        'en': "Language saved! Press the button below to check air quality."
-    }.get(lang)
-
-    bot.send_message(message.chat.id, confirm_msg, reply_markup=loc_markup)
-
-@bot.message_handler(content_types=['location'])
-def handle_location(message):
-    print("📍 Геолокация получена", flush=True)
-    user_id = str(message.chat.id)
-    user_ids.add(message.chat.id)
-    lang = user_languages.get(user_id, 'ru')
-
-    lat = float(message.location.latitude)
-    lon = float(message.location.longitude)
-
-    bot.send_chat_action(message.chat.id, 'typing')
-
-    print("📊 Получаю данные о воздухе...", flush=True)
-    air_data, source_name = get_best_air_data(lat, lon)
-    
-    print("💨 Получаю погоду...", flush=True)
-    weather = get_weather(lat, lon)
-    
-    print("🏭 Ищу объекты...", flush=True)
-    sources = get_nearby_sources(lat, lon)
-    
-    print("🔍 Анализирую...", flush=True)
-    wind_analysis = analyze_wind_and_sources(weather, sources, lat, lon)
-    pollution_analysis = analyze_pollution(air_data, wind_analysis)
-    
-    print("🤖 Запрашиваю ИИ...", flush=True)
-    recommendations = get_ai_recommendations(
-        air_data, weather, wind_analysis, pollution_analysis, lang
-    )
-    
-    print("📤 Формирую ответ...", flush=True)
-    response = format_full_response(
-        air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang
-    )
-    
-    print("✅ Отправляю ответ...", flush=True)
-    safe_send_message(message.chat.id, response)
-    print("📨 Ответ отправлен", flush=True)
-
-# ==========================================
-# 10. ФОНОВЫЕ ЗАДАЧИ
-# ==========================================
-
-def background_notifier():
-    while True:
-        time.sleep(21600)
-        for uid in list(user_ids):
-            try:
-                lang = user_languages.get(str(uid), 'ru')
-                remind_text = {
-                    'ru': "🔔 Не забудьте обновить геолокацию, чтобы проверить качество воздуха!",
-                    'kk': "🔔 Ауа сапасын тексеру үшін геолокацияны жаңартуды ұмытпаңыз!",
-                    'en': "🔔 Don't forget to send your location to update air quality status!"
-                }.get(lang, "🔔 Проверьте качество воздуха!")
-                bot.send_message(uid, remind_text)
-            except Exception as e:
-                logging.error(f"Ошибка уведомления: {e}")
-
-# ==========================================
-# 11. ЗАПУСК
-# ==========================================
-
-if __name__ == '__main__':
-    acquire_pid_lock()
-    load_user_languages()
-
-    threading.Thread(target=start_health_check_server, daemon=True).start()
-    threading.Thread(target=background_notifier, daemon=True).start()
-
-    print("🚀 Бот запущен!", flush=True)
-
-    try:
-        bot.polling(none_stop=True, interval=1, timeout=30)
-    except (KeyboardInterrupt, SystemExit):
-        print("🛑 Остановка бота...", flush=True)
-    finally:
-        release_pid_lock()
+# =
