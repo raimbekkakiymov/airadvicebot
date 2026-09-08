@@ -393,7 +393,12 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
         prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        body = {
+    "systemInstruction": {
+        "parts": [{"text": f"Отвечай только на языке: {lang_name}"}]
+    },
+    "contents": [{"parts": [{"text": prompt}]}]
+}
 
         r = requests.post(url, headers=headers, json=body, timeout=8)
         data = r.json()
