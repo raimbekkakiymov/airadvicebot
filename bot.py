@@ -371,37 +371,34 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     if not GEMINI_API_KEY:
         return None
-    print("🤖 Запрос рекомендаций к Gemini...", flush=True)
+    print("🤖 Запрос к Gemini...", flush=True)
     try:
         prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
+        
+        lang_names = {
+            'ru': 'Русский',
+            'kk': 'Казахский (Қазақша)',
+            'en': 'English'
+        }
+        lang_name = lang_names.get(lang, 'Русский')
+        
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        lang_names = {     'ru': 'Русский',     'kk': 'Казахский (Қазақша)',     'en': 'English' } lang_name = lang_names.get(lang, 'Русский')  body = {     "systemInstruction": {         "parts": [{"text": f"Ты отвечаешь ТОЛЬКО на языке: {lang_name}. Все названия продуктов, витаминов, активности — только на {lang_name}. Не используй другие языки."}]     },     "contents": [{"parts": [{"text": prompt}]}] }
+        body = {
+            "systemInstruction": {
+                "parts": [{"text": f"Отвечай только на {lang_name}"}]
+            },
+            "contents": [{"parts": [{"text": prompt}]}]
+        }
+
         r = requests.post(url, headers=headers, json=body, timeout=8)
         data = r.json()
+        
         if 'candidates' in data and data['candidates']:
             print("✅ Gemini ответил", flush=True)
             return data['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
         logging.error(f"Gemini error: {e}")
-    return None
-
-def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
-    if not DEEPSEEK_API_KEY:
-        return None
-    print("🤖 Запрос рекомендаций к DeepSeek...", flush=True)
-    try:
-        prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
-        url = "https://api.deepseek.com/v1/chat/completions"
-        headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-        body = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.5}
-        r = requests.post(url, headers=headers, json=body, timeout=8)
-        data = r.json()
-        if 'choices' in data and data['choices']:
-            print("✅ DeepSeek ответил", flush=True)
-            return data['choices'][0]['message']['content']
-    except Exception as e:
-        logging.error(f"DeepSeek error: {e}")
     return None
 
 def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
