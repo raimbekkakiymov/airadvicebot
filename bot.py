@@ -202,103 +202,8 @@ def calculate_aqi_from_pm25(pm25):
     else:
         return 200
 
-# ==========================================
-# 5.1 WIKIDATA SPARQL — ПОИСК ЗАВОДОВ
-# ==========================================
-
-def get_nearby_sources_wikidata(lat, lon):
-    """Поиск промышленных объектов через Wikidata SPARQL"""
-    print("🔍 Поиск объектов через Wikidata...", flush=True)
-    try:
-        url = "https://query.wikidata.org/sparql"
-        query = f"""
-        SELECT ?item ?itemLabel ?coord WHERE {{
-          ?item wdt:P31/wdt:P279* wd:Q83405 .
-          ?item wdt:P625 ?coord .
-          SERVICE wikibase:around {{
-            ?item wdt:P625 ?location .
-            bd:serviceParam wikibase:center "Point({lon} {lat})"^^geo:wktLiteral .
-            bd:serviceParam wikibase:radius "7" .
-          }}
-          SERVICE wikibase:label {{ bd:serviceParam wikibase:language "ru,kk,en". }}
-        }}
-        LIMIT 10
-        """
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "AirAdviceBot/1.0"
-        }
-        r = requests.get(url, params={"query": query}, headers=headers, timeout=10)
-        
-        if r.status_code == 200:
-            data = r.json()
-            sources = []
-            for item in data.get('results', {}).get('bindings', []):
-                name = item.get('itemLabel', {}).get('value', 'Завод')
-                coord = item.get('coord', {}).get('value', '')
-                if coord:
-                    coords = coord.replace('Point(', '').replace(')', '').split()
-                    if len(coords) == 2:
-                        sources.append({
-                            'name': name,
-                            'lat': float(coords[1]),
-                            'lon': float(coords[0])
-                        })
-            
-            if sources:
-                print(f"✅ Wikidata: найдено {len(sources)} объектов", flush=True)
-                return sources
-    except Exception as e:
-        logging.error(f"Wikidata error: {e}")
-    
-    print("❌ Wikidata: объекты не найдены", flush=True)
-    return []
-
 def get_nearby_sources(lat, lon):
-    """Поиск объектов: Wikidata → Overpass → пусто"""
     print("🏭 Поиск объектов...", flush=True)
-    
-    # 1. Wikidata SPARQL
-    sources = get_nearby_sources_wikidata(lat, lon)
-    if sources:
-        return sources
-    
-    # 2. Overpass (запасной)
-    overpass_urls = [
-        "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter"
-    ]
-    
-    query = f"""
-    [out:json][timeout:5];
-    (
-      node["landuse"="industrial"](around:7000,{lat:.6f},{lon:.6f});
-      way["landuse"="industrial"](around:7000,{lat:.6f},{lon:.6f});
-      way["landuse"="landfill"](around:7000,{lat:.6f},{lon:.6f});
-    );
-    out center;
-    """
-
-    for url in overpass_urls:
-        try:
-            r = requests.post(url, data={'data': query}, timeout=5)
-            if r.status_code == 200:
-                elements = r.json().get('elements', [])
-                sources = []
-                for el in elements:
-                    s_lat = el.get('lat') or el.get('center', {}).get('lat')
-                    s_lon = el.get('lon') or el.get('center', {}).get('lon')
-                    tags = el.get('tags', {})
-                    name = tags.get('name') or tags.get('landuse') or "Промзона"
-                    if s_lat and s_lon:
-                        sources.append({'name': name, 'lat': s_lat, 'lon': s_lon})
-                if sources:
-                    print(f"✅ Overpass: найдено {len(sources)} объектов", flush=True)
-                    return sources
-        except Exception as e:
-            logging.error(f"Overpass error: {e}")
-    
-    print("❌ Объекты не найдены", flush=True)
     return []
 
 # ==========================================
@@ -329,34 +234,21 @@ def analyze_pollution(air_data, wind_analysis, lang='ru'):
     aqi = air_data.get('aqi') if air_data else None
     has_active_sources = len(wind_analysis.get('active_sources', [])) > 0
 
-    # Статусы на разных языках
     levels = {
         'ru': {
-            1: "Чистый воздух",
-            2: "Умеренное качество",
-            3: "Вредно для чувствительных групп",
-            4: "Вредный уровень",
-            5: "Опасный уровень",
-            'risk': "Повышенный риск (ветер с промзоны)",
-            'normal': "Норма (косвенная оценка)"
+            1: "Чистый воздух", 2: "Умеренное качество", 3: "Вредно для чувствительных групп",
+            4: "Вредный уровень", 5: "Опасный уровень",
+            'risk': "Повышенный риск (ветер с промзоны)", 'normal': "Норма (косвенная оценка)"
         },
         'kk': {
-            1: "Таза ауа",
-            2: "Орташа сапа",
-            3: "Сезімтал топтар үшін зиянды",
-            4: "Зиянды деңгей",
-            5: "Қауіпті деңгей",
-            'risk': "Жоғары қауіп (өнеркәсіп аймағынан жел)",
-            'normal': "Қалыпты (жанама бағалау)"
+            1: "Таза ауа", 2: "Орташа сапа", 3: "Сезімтал топтар үшін зиянды",
+            4: "Зиянды деңгей", 5: "Қауіпті деңгей",
+            'risk': "Жоғары қауіп (өнеркәсіп аймағынан жел)", 'normal': "Қалыпты (жанама бағалау)"
         },
         'en': {
-            1: "Clean air",
-            2: "Moderate quality",
-            3: "Unhealthy for sensitive groups",
-            4: "Unhealthy level",
-            5: "Hazardous level",
-            'risk': "Increased risk (wind from industrial zone)",
-            'normal': "Normal (indirect assessment)"
+            1: "Clean air", 2: "Moderate quality", 3: "Unhealthy for sensitive groups",
+            4: "Unhealthy level", 5: "Hazardous level",
+            'risk': "Increased risk (wind from industrial zone)", 'normal': "Normal (indirect assessment)"
         }
     }
     
@@ -377,116 +269,122 @@ def analyze_pollution(air_data, wind_analysis, lang='ru'):
     return {'level_str': level, 'level_code': level_code}
 
 # ==========================================
-# 7. ИИ РЕКОМЕНДАЦИИ
+# 7. ИИ: АНАЛИЗ ИСТОЧНИКОВ ПО ВЕТРУ
 # ==========================================
 
-def get_pollutants_for_sources(active_sources, air_data):
-    pollutants = []
+def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru'):
+    """
+    ИИ определяет, что находится с наветренной стороны, и какие элементы могут быть
+    """
+    if not GEMINI_API_KEY:
+        return None
     
-    if air_data:
-        pm25 = air_data.get('pm25', 0) or 0
-        pm10 = air_data.get('pm10', 0) or 0
-        no2 = air_data.get('no2', 0) or 0
-        so2 = air_data.get('so2', 0) or 0
-        co = air_data.get('co', 0) or 0
+    lang_names = {
+        'ru': 'Русский',
+        'kk': 'Казахский (Қазақша)',
+        'en': 'English'
+    }
+    lang_name = lang_names.get(lang, 'Русский')
+    
+    try:
+        prompt = f"""
+Ты — эксперт по экологии и промышленной безопасности.
+
+ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
+- Координаты: {lat}, {lon}
+- Ветер дует с: {wind_dir_text} (градус: {wind_deg}°)
+
+ТЕКУЩИЕ ПОКАЗАТЕЛИ ВОЗДУХА:
+- AQI: {air_data.get('aqi', 'Нет данных') if air_data else 'Нет данных'}
+- Мелкие частицы: {air_data.get('pm25', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+- Крупная пыль: {air_data.get('pm10', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота: {air_data.get('no2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы: {air_data.get('so2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+
+ЗАДАЧА:
+1. Используя свои знания о географии и промышленности, определи, какие промышленные объекты могут находиться с НАВЕТРЕННОЙ стороны (ветер дует ОТТУДА к пользователю)
+2. Сопоставь показатели воздуха с возможными источниками
+3. Сделай вывод: какие сопутствующие элементы могут быть в воздухе
+
+ФОРМАТ ОТВЕТА:
+🏭 **Вероятные источники:**
+• [Название объекта] — [что выделяет]
+
+⚠️ **Сопутствующие элементы:**
+• [Элемент 1] — [опасность]
+• [Элемент 2] — [опасность]
+
+Ответь на языке: {lang_name}
+"""
         
-        if pm25 > 35:
-            pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
-        if pm10 > 60:
-            pollutants.extend(['Дорожная пыль', 'Строительная пыль'])
-        if no2 > 80:
-            pollutants.extend(['Бенз(а)пирен', 'Угарный газ'])
-        if so2 > 50:
-            pollutants.extend(['Сульфаты', 'Кислотные аэрозоли'])
-        if co > 5:
-            pollutants.extend(['Летучие органические соединения'])
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
+        
+        r = requests.post(url, headers=headers, json=body, timeout=10)
+        data = r.json()
+        
+        if 'candidates' in data and data['candidates']:
+            result = data['candidates'][0]['content']['parts'][0]['text']
+            print("✅ ИИ определил источники", flush=True)
+            return result
     
-    for src in active_sources:
-        name = src['name'].lower()
-        if 'свалка' in name or 'landfill' in name or 'waste' in name:
-            pollutants.extend(['Метан', 'Сероводород', 'Аммиак', 'Меркаптаны'])
-        elif 'тэц' in name or 'power' in name or 'электро' in name:
-            pollutants.extend(['Зола', 'Диоксид серы', 'Оксиды азота', 'Ртуть'])
-        elif 'нефт' in name or 'oil' in name or 'нпз' in name:
-            pollutants.extend(['Бензол', 'Толуол', 'Сероводород', 'Фенол'])
-        elif 'хим' in name or 'chemical' in name:
-            pollutants.extend(['Фталаты', 'Винилхлорид', 'Микропластик', 'Полимерная пыль'])
-        elif 'цемент' in name or 'cement' in name:
-            pollutants.extend(['Цементная пыль', 'Оксиды кальция', 'Кремниевая пыль'])
-        elif 'метал' in name or 'metal' in name:
-            pollutants.extend(['Тяжёлые металлы', 'Металлическая пыль'])
-        else:
-            pollutants.extend(['Промышленная пыль', 'Летучие соединения'])
+    except Exception as e:
+        logging.error(f"ИИ анализ источников: {e}")
     
-    seen = set()
-    result = []
-    for p in pollutants:
-        if p not in seen:
-            seen.add(p)
-            result.append(p)
-    
-    return result
+    return None
+
+# ==========================================
+# 8. ИИ РЕКОМЕНДАЦИИ
+# ==========================================
 
 def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'Н/Д'
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
-    pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
+    pollutants = ['Сажа', 'Пыль', 'Тяжёлые металлы']
     
-    # Полное название языка
     lang_names = {
-        'ru': 'Русский (Russian)',
-        'kk': 'Казахский (Kazakh, Қазақша)',
-        'en': 'Английский (English)'
+        'ru': 'Русский',
+        'kk': 'Казахский (Қазақша)',
+        'en': 'English'
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-    # Промпт на русском (как основной)
     prompt = f"""
 Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- Крупная пыль (PM10): {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
-- Диоксид азота (NO2): {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
-- Диоксид серы (SO2): {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
+- Мелкие частицы: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- Крупная пыль: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
-- Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
-- Сопутствующие элементы: {', '.join(pollutants) if pollutants else 'Не определены'}
 
 Дай РАЗВЕРНУТЫЕ рекомендации:
 
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать? Чем заменить?
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
+2. ПИТАНИЕ: 5-7 продуктов
+3. ПИТЬЕВОЙ РЕЖИМ
+4. ВИТАМИНЫ
 
-2. ПИТАНИЕ: 5-7 конкретных продуктов, почему они помогают против данных загрязнителей
-
-3. ПИТЬЕВОЙ РЕЖИМ: сколько и как часто пить
-
-4. ВИТАМИНЫ: конкретные витамины и зачем
-
-КРИТИЧЕСКИ ВАЖНО:
-- Отвечай ТОЛЬКО на языке: {lang_name}
-- НЕ используй другие языки
-- Названия продуктов и витаминов пиши на {lang_name}
-- Если не знаешь перевод — используй транслитерацию
+КРИТИЧЕСКИ ВАЖНО: Отвечай ТОЛЬКО на {lang_name}. Названия продуктов пиши на {lang_name}.
 """
     return prompt
 
 def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     if not GEMINI_API_KEY:
         return None
-    print("🤖 Запрос к Gemini...", flush=True)
+    print("🤖 Запрос рекомендаций к Gemini...", flush=True)
     try:
         prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         body = {"contents": [{"parts": [{"text": prompt}]}]}
-
         r = requests.post(url, headers=headers, json=body, timeout=8)
         data = r.json()
-        
         if 'candidates' in data and data['candidates']:
             print("✅ Gemini ответил", flush=True)
             return data['candidates'][0]['content']['parts'][0]['text']
@@ -497,16 +395,12 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
 def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     if not DEEPSEEK_API_KEY:
         return None
-    print("🤖 Запрос к DeepSeek...", flush=True)
+    print("🤖 Запрос рекомендаций к DeepSeek...", flush=True)
     try:
         prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"}
-        body = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.5
-        }
+        body = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "temperature": 0.5}
         r = requests.post(url, headers=headers, json=body, timeout=8)
         data = r.json()
         if 'choices' in data and data['choices']:
@@ -518,88 +412,12 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
 
 def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     risk_level = pollution_analysis.get('level_code', 1)
-    pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
-    
-    food_map = {
-        'Метан': "🥦 Broccoli, spinach (chlorophyll binds toxins)",
-        'Сероводород': "🍵 Green tea, turmeric (antioxidants)",
-        'Аммиак': "💧 Plenty of fluids, lemon water",
-        'Зола': "🍎 Apples, beets (pectin removes heavy metals)",
-        'Диоксид серы': "🥬 Cabbage, radish (cruciferous protect bronchi)",
-        'Оксиды азота': "🥕 Carrots, pumpkin (vitamin A for mucous)",
-        'Тяжёлые металлы': "🌿 Cilantro, seaweed (alginates bind metals)",
-        'Бенз(а)пирен': "🍇 Blueberries, grapes (resveratrol)",
-        'Сажа': "🍵 Green tea, ginger (anti-inflammatory)",
-        'Пыль': "💧 Plenty of fluids, warm drinks",
-        'Фталаты': "🥦 Broccoli, cauliflower (sulforaphane)",
-        'Винилхлорид': "🌿 Milk thistle, cilantro (liver support)",
-        'Микропластик': "🦪 Seaweed, fiber",
-        'Летучие соединения': "🍊 Citrus, green tea",
-        'Ртуть': "🦪 Seaweed, cilantro (remove mercury)",
-        'Бензол': "🥦 Broccoli, cabbage (glucosinolates)",
-        'Толуол': "🍵 Green tea, turmeric"
-    }
-    
-    recommended_foods = []
-    for p in pollutants[:5]:
-        if p in food_map:
-            recommended_foods.append(food_map[p])
-    
-    if not recommended_foods:
-        recommended_foods = ["🥗 Balanced diet: vegetables, proteins, whole grains"]
-    
-    vitamins = ["💊 Vitamin C (antioxidant)", "💊 Omega-3 (anti-inflammatory)"]
     
     activity_map = {
-        'ru': {
-            1: "✅ Можно бегать, гулять, тренироваться на улице",
-            2: "🏃‍♂️ Можно гулять, но интенсивный бег лучше перенести в зал",
-            3: "⚠️ Лучше тренироваться в помещении. На улице — маска",
-            4: "⛔ Только в помещении. Окна закрыты",
-            5: "🚫 Оставайтесь дома. Никаких уличных тренировок"
-        },
-        'kk': {
-            1: "✅ Жүгіруге, серуендеуге, далада жаттығуға болады",
-            2: "🏃‍♂️ Серуендеуге болады, бірақ қарқынды жүгіруді залға ауыстырған жөн",
-            3: "⚠️ Үй ішінде жаттығу ұсынылады. Далада — маска",
-            4: "⛔ Тек үй ішінде. Терезелер жабық",
-            5: "🚫 Үйде болыңыз. Далада жаттығуға болмайды"
-        },
-        'en': {
-            1: "✅ You can run, walk, train outdoors",
-            2: "🏃‍♂️ You can walk, but intense running better move to gym",
-            3: "⚠️ Better to exercise indoors. Wear mask outside",
-            4: "⛔ Indoor only. Windows closed",
-            5: "🚫 Stay home. No outdoor training"
-        }
+        'ru': {1: "✅ Можно бегать", 2: "🏃‍♂️ Можно гулять", 3: "⚠️ Лучше в зал", 4: "⛔ Только дома", 5: "🚫 Оставайтесь дома"},
+        'kk': {1: "✅ Жүгіруге болады", 2: "🏃‍♂️ Серуендеуге болады", 3: "⚠️ Залға барыңыз", 4: "⛔ Тек үйде", 5: "🚫 Үйде болыңыз"},
+        'en': {1: "✅ You can run", 2: "🏃‍♂️ You can walk", 3: "⚠️ Better go to gym", 4: "⛔ Indoor only", 5: "🚫 Stay home"}
     }
-    
-    water_map = {
-        'ru': {
-            1: "💧 1.5-2 литра в день",
-            2: "💧 2 литра в день",
-            3: "💧 2-2.5 литра, каждые 30 минут по глотку",
-            4: "💧 2.5-3 литра, тёплая вода",
-            5: "💧 3+ литра, обязательно тёплая"
-        },
-        'kk': {
-            1: "💧 Күніне 1.5-2 литр",
-            2: "💧 Күніне 2 литр",
-            3: "💧 2-2.5 литр, әр 30 минут сайын бір жұтым",
-            4: "💧 2.5-3 литр, жылы су",
-            5: "💧 3+ литр, міндетті түрде жылы"
-        },
-        'en': {
-            1: "💧 1.5-2 liters per day",
-            2: "💧 2 liters per day",
-            3: "💧 2-2.5 liters, sip every 30 minutes",
-            4: "💧 2.5-3 liters, warm water",
-            5: "💧 3+ liters, must be warm"
-        }
-    }
-    
-    activity = activity_map.get(lang, activity_map['ru']).get(risk_level, "✅ OK")
-    water = water_map.get(lang, water_map['ru']).get(risk_level, "💧 2L/day")
     
     titles_rule = {
         'ru': {'activity': "Физическая активность", 'food': "Питание", 'water': "Питьевой режим", 'vitamins': "Витамины"},
@@ -608,158 +426,65 @@ def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_a
     }
     
     tr = titles_rule.get(lang, titles_rule['ru'])
+    activity = activity_map.get(lang, activity_map['ru']).get(risk_level, "✅ OK")
     
     msg = f"🏃‍♂️ **{tr['activity']}:**\n{activity}\n\n"
-    msg += f"🥗 **{tr['food']}:**\n"
-    for food in recommended_foods:
-        msg += f"{food}\n"
-    msg += f"\n💧 **{tr['water']}:**\n{water}\n\n"
-    msg += f"💊 **{tr['vitamins']}:**\n"
-    for vit in vitamins:
-        msg += f"{vit}\n"
+    msg += f"🥗 **{tr['food']}:**\n• Овощи и фрукты\n• Зелёный чай\n• Брокколи\n\n"
+    msg += f"💧 **{tr['water']}:**\n• 2 литра в день\n\n"
+    msg += f"💊 **{tr['vitamins']}:**\n• Витамин C\n• Омега-3\n"
     
     return msg
 
 def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     rec = get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
     if rec: return rec
-
     rec = get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
     if rec: return rec
-
-    print("📋 Использую rule-based рекомендации", flush=True)
+    print("📋 Использую rule-based", flush=True)
     return get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
 
 # ==========================================
-# 8. ФОРМАТИРОВАНИЕ ОТВЕТА
+# 9. ФОРМАТИРОВАНИЕ ОТВЕТА
 # ==========================================
 
-def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang='ru'):
-    pollutant_names = {
-        'ru': {
-            'pm25': "Мелкие частицы (PM2.5)",
-            'pm10': "Крупная пыль (PM10)",
-            'no2': "Диоксид азота",
-            'so2': "Диоксид серы"
-        },
-        'kk': {
-            'pm25': "Ұсақ бөлшектер (PM2.5)",
-            'pm10': "Ірі шаң (PM10)",
-            'no2': "Азот диоксиді",
-            'so2': "Күкірт диоксиді"
-        },
-        'en': {
-            'pm25': "Fine particles (PM2.5)",
-            'pm10': "Coarse dust (PM10)",
-            'no2': "Nitrogen dioxide",
-            'so2': "Sulfur dioxide"
-        }
-    }
-    
+def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang='ru', ai_source_analysis=None):
     titles = {
-        'ru': {
-            'report': "Экологический отчет",
-            'air_quality': "Качество воздуха",
-            'status': "Статус",
-            'weather': "Погода",
-            'temp': "Температура",
-            'humidity': "Влажность",
-            'wind': "Ветер",
-            'upwind': "Объекты с наветренной стороны",
-            'nearby': "Промышленных объектов рядом",
-            'wind_away': "Ветер дует в сторону от объектов.",
-            'pollutants': "Возможные сопутствующие элементы",
-            'no_data': "Нет данных",
-            'source': "Источник"
-        },
-        'kk': {
-            'report': "Экологиялық есеп",
-            'air_quality': "Ауа сапасы",
-            'status': "Статус",
-            'weather': "Ауа райы",
-            'temp': "Температура",
-            'humidity': "Ылғалдылық",
-            'wind': "Жел",
-            'upwind': "Жел жақтағы нысандар",
-            'nearby': "Жақын жердегі өнеркәсіп нысандары",
-            'wind_away': "Жел нысандардан қарама-қарсы соғып тұр.",
-            'pollutants': "Ықтимал қосымша элементтер",
-            'no_data': "Деректер жоқ",
-            'source': "Дереккөз"
-        },
-        'en': {
-            'report': "Environmental Report",
-            'air_quality': "Air Quality",
-            'status': "Status",
-            'weather': "Weather",
-            'temp': "Temperature",
-            'humidity': "Humidity",
-            'wind': "Wind",
-            'upwind': "Upwind Sources",
-            'nearby': "Nearby industrial objects",
-            'wind_away': "Wind blows away from objects.",
-            'pollutants': "Possible Additional Pollutants",
-            'no_data': "No data",
-            'source': "Source"
-        }
+        'ru': {'report': "Экологический отчет", 'air_quality': "Качество воздуха", 'status': "Статус",
+               'weather': "Погода", 'temp': "Температура", 'humidity': "Влажность", 'wind': "Ветер",
+               'no_data': "Нет данных", 'source': "Источник"},
+        'kk': {'report': "Экологиялық есеп", 'air_quality': "Ауа сапасы", 'status': "Статус",
+               'weather': "Ауа райы", 'temp': "Температура", 'humidity': "Ылғалдылық", 'wind': "Жел",
+               'no_data': "Деректер жоқ", 'source': "Дереккөз"},
+        'en': {'report': "Environmental Report", 'air_quality': "Air Quality", 'status': "Status",
+               'weather': "Weather", 'temp': "Temperature", 'humidity': "Humidity", 'wind': "Wind",
+               'no_data': "No data", 'source': "Source"}
     }
     
     t = titles.get(lang, titles['ru'])
-    pn = pollutant_names.get(lang, pollutant_names['ru'])
     
     msg = f"🌍 **{t['report']}**\n"
     msg += f"───────────────────────\n\n"
     
     if air_data:
-        aqi = air_data.get('aqi', t['no_data'])
-        pm25 = air_data.get('pm25', t['no_data'])
-        pm10 = air_data.get('pm10', t['no_data'])
-        no2 = air_data.get('no2', t['no_data'])
-        so2 = air_data.get('so2', t['no_data'])
-        
         msg += f"📊 **{t['air_quality']}:**\n"
-        msg += f"• AQI: {aqi}\n"
-        msg += f"• {pn['pm25']}: {pm25} µg/m3\n"
-        msg += f"• {pn['pm10']}: {pm10} µg/m3\n"
-        msg += f"• {pn['no2']}: {no2} µg/m3\n"
-        msg += f"• {pn['so2']}: {so2} µg/m3\n"
+        msg += f"• AQI: {air_data.get('aqi', t['no_data'])}\n"
+        msg += f"• PM2.5: {air_data.get('pm25', t['no_data'])} µg/m3\n"
+        msg += f"• PM10: {air_data.get('pm10', t['no_data'])} µg/m3\n"
+        msg += f"• NO2: {air_data.get('no2', t['no_data'])} µg/m3\n"
+        msg += f"• SO2: {air_data.get('so2', t['no_data'])} µg/m3\n"
         msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
         msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
     
     if weather:
-        temp = weather.get('temp', t['no_data'])
-        humidity = weather.get('humidity', t['no_data'])
-        wind_speed = weather.get('wind_speed', t['no_data'])
-        wind_dir = get_wind_direction_text(weather.get('wind_deg', 0), lang)
-        
         msg += f"💨 **{t['weather']}:**\n"
-        msg += f"• {t['temp']}: {temp}°C\n"
-        msg += f"• {t['humidity']}: {humidity}%\n"
-        msg += f"• {t['wind']}: {wind_dir}, {wind_speed} м/с\n\n"
-    else:
-        msg += f"💨 **{t['weather']}:** {t['no_data']}\n\n"
+        msg += f"• {t['temp']}: {weather['temp']}°C\n"
+        msg += f"• {t['humidity']}: {weather['humidity']}%\n"
+        msg += f"• {t['wind']}: {get_wind_direction_text(weather['wind_deg'], lang)}, {weather['wind_speed']} м/с\n\n"
     
-    active_sources = wind_analysis.get('active_sources', [])
-    total_sources = wind_analysis.get('nearby_sources_count', 0)
-    
-    if active_sources:
-        msg += f"🏭 **{t['upwind']}:**\n"
-        for src in active_sources:
-            msg += f"• {src['name']}\n"
-        msg += "\n"
-        
-        pollutants = get_pollutants_for_sources(active_sources, air_data)
-        if pollutants:
-            msg += f"⚠️ **{t['pollutants']}:**\n"
-            for p in pollutants:
-                msg += f"• {p}\n"
-            msg += "\n"
-    elif total_sources > 0:
-        msg += f"🏭 **{t['nearby']}:** {total_sources}\n"
-        msg
-
-        msg += f"{t['wind_away']}\n\n"
+    # ИИ-анализ источников
+    if ai_source_analysis:
+        msg += f"{ai_source_analysis}\n\n"
     
     msg += f"───────────────────────\n"
     msg += f"{recommendations}"
@@ -777,7 +502,7 @@ def safe_send_message(chat_id, text):
             logging.error(f"Ошибка отправки: {e}")
 
 # ==========================================
-# 9. ОБРАБОТЧИКИ
+# 10. ОБРАБОТЧИКИ
 # ==========================================
 
 @bot.message_handler(commands=['start', 'help'])
@@ -811,9 +536,9 @@ def set_language(message):
     loc_markup.add(btn)
 
     confirm_msg = {
-        'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы проверить воздух.",
-        'kk': "Тіл сақталды! Ауа сапасын тексеру үшін төмендегі батырманы басыңыз.",
-        'en': "Language saved! Press the button below to check air quality."
+        'ru': "Язык сохранен! Нажмите кнопку ниже.",
+        'kk': "Тіл сақталды! Төмендегі батырманы басыңыз.",
+        'en': "Language saved! Press the button below."
     }.get(lang)
 
     bot.send_message(message.chat.id, confirm_msg, reply_markup=loc_markup)
@@ -836,29 +561,30 @@ def handle_location(message):
     print("💨 Получаю погоду...", flush=True)
     weather = get_weather(lat, lon)
     
-    print("🏭 Ищу объекты...", flush=True)
-    sources = get_nearby_sources(lat, lon)
+    wind_deg = weather.get('wind_deg', 0) if weather else 0
+    wind_dir_text = get_wind_direction_text(wind_deg, lang)
     
-    print("🔍 Анализирую...", flush=True)
+    print("🤖 ИИ анализирует источники...", flush=True)
+    ai_source_analysis = get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang)
+    
+    sources = get_nearby_sources(lat, lon)
     wind_analysis = analyze_wind_and_sources(weather, sources, lat, lon)
     pollution_analysis = analyze_pollution(air_data, wind_analysis, lang)
     
-    print("🤖 Запрашиваю ИИ...", flush=True)
-    recommendations = get_ai_recommendations(
-        air_data, weather, wind_analysis, pollution_analysis, lang
-    )
+    print("🤖 Запрашиваю рекомендации...", flush=True)
+    recommendations = get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
     
     print("📤 Формирую ответ...", flush=True)
     response = format_full_response(
-        air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang
+        air_data, weather, wind_analysis, pollution_analysis,
+        recommendations, source_name, lang, ai_source_analysis
     )
     
     print("✅ Отправляю ответ...", flush=True)
     safe_send_message(message.chat.id, response)
-    print("📨 Ответ отправлен", flush=True)
 
 # ==========================================
-# 10. ФОНОВЫЕ ЗАДАЧИ
+# 11. ФОНОВЫЕ ЗАДАЧИ
 # ==========================================
 
 def background_notifier():
@@ -868,16 +594,16 @@ def background_notifier():
             try:
                 lang = user_languages.get(str(uid), 'ru')
                 remind_text = {
-                    'ru': "🔔 Не забудьте обновить геолокацию, чтобы проверить качество воздуха!",
-                    'kk': "🔔 Ауа сапасын тексеру үшін геолокацияны жаңартуды ұмытпаңыз!",
-                    'en': "🔔 Don't forget to send your location to update air quality status!"
-                }.get(lang, "🔔 Проверьте качество воздуха!")
+                    'ru': "🔔 Проверьте качество воздуха!",
+                    'kk': "🔔 Ауа сапасын тексеріңіз!",
+                    'en': "🔔 Check air quality!"
+                }.get(lang, "🔔 Check air quality!")
                 bot.send_message(uid, remind_text)
             except Exception as e:
                 logging.error(f"Ошибка уведомления: {e}")
 
 # ==========================================
-# 11. ЗАПУСК
+# 12. ЗАПУСК
 # ==========================================
 
 if __name__ == '__main__':
