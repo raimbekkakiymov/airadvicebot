@@ -353,11 +353,11 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-    prompt = f"""Ты — эксперт по экологии и промышленной безопасности."""
+        prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
 - Координаты: {lat}, {lon}
-- Ветер дует с: {wind_dir_text} (градус: {wind_deg}°)
+- Ветер дует с: {wind_dir_text} (градус: {wind_deg})
 
 ТЕКУЩИЕ ПОКАЗАТЕЛИ ВОЗДУХА:
 - AQI: {air_data.get('aqi', 'Нет данных') if air_data else 'Нет данных'}
