@@ -436,13 +436,15 @@ def analyze_pollution(air_data, wind_analysis):
 
 def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
     """Запрашиваем рекомендации у DeepSeek"""
-    print("🔍 Начинаю запрос к DeepSeek...")
+    print("🔍 Начинаю запрос к DeepSeek...", flush=True)
     
+    # Проверяем ключ
     if not DEEPSEEK_API_KEY:
-        print("❌ DeepSeek API key not found")
+        print("❌ DEEPSEEK_API_KEY не найден", flush=True)
+        print(f"Переменные окружения: {os.environ.keys()}", flush=True)
         return None
     
-    print(f"✅ Ключ найден: {DEEPSEEK_API_KEY[:10]}...")
+    print(f"✅ Ключ найден: {DEEPSEEK_API_KEY[:10]}...", flush=True)
     
     try:
         context = f"""
