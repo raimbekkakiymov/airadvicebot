@@ -107,8 +107,8 @@ def call_openrouter(prompt, system_prompt=None, max_tokens=1000, temperature=0.7
         headers = {
             "Authorization": f"Bearer {OPENROUTER_API_KEY}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://render.com",  # Обязательно для OpenRouter
-            "X-Title": "AirQualityBot"  # Название вашего приложения
+            "HTTP-Referer": "https://render.com",
+            "X-Title": "AirQualityBot"
         }
         
         messages = []
@@ -353,7 +353,7 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-        prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
+    prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
 - Координаты: {lat}, {lon}
@@ -405,7 +405,7 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-        prompt = f"""Ты — эксперт по экологии, токсикологии и нутрициологии.
+    prompt = f"""Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 ДАННЫЕ О ВОЗДУХЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
@@ -416,7 +416,7 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
 - CO: {air_data.get('co') if air_data else 'Нет данных'} µg/m3
 
 ПОГОДА:
-- Температура: {weather.get('temp') if weather else 'Н/Д'}°C
+- Температура: {weather.get('temp') if weather else 'Н/Д'} C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
 
@@ -496,7 +496,7 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     msg = f"🌍 **{t['report']}**\n"
     msg += "───────────────────────\n\n"
     
-        if air_data:
+    if air_data:
         msg += f"📊 **{t['air_quality']}:**\n"
         msg += f"• AQI: {air_data.get('aqi', t['no_data'])}\n"
         msg += f"• PM2.5: {air_data.get('pm25', t['no_data'])} µg/m3\n"
@@ -520,7 +520,7 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     
     if weather:
         msg += f"💨 **{t['weather']}:**\n"
-        msg += f"• {t['temp']}: {weather['temp']}°C\n"
+        msg += f"• {t['temp']}: {weather['temp']} C\n"
         msg += f"• {t['humidity']}: {weather['humidity']}%\n"
         msg += f"• {t['wind']}: {get_wind_direction_text(weather['wind_deg'], lang)}, {weather['wind_speed']} м/с\n\n"
     
@@ -673,9 +673,4 @@ if __name__ == '__main__':
 
     try:
         bot.polling(none_stop=True, interval=1, timeout=30)
-    except (KeyboardInterrupt, SystemExit):
-        print("🛑 Остановка бота...", flush=True)
-    except Exception as e:
-        print(f"❌ Ошибка polling: {e}", flush=True)
-    finally:
-        release_pid_lock()
+    except (KeyboardInterrupt
