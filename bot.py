@@ -102,14 +102,22 @@ def check_wind_from_source(wind_deg, source_bearing, tolerance=25):
         diff = 360 - diff
     return diff <= tolerance
 
-def get_wind_direction_text(deg):
-    directions = [
-        (0, "Северный"), (45, "Северо-восточный"), (90, "Восточный"),
-        (135, "Юго-восточный"), (180, "Южный"), (225, "Юго-западный"),
-        (270, "Западный"), (315, "Северо-западный")
-    ]
-    closest = min(directions, key=lambda x: abs(x[0] - deg))
-    return closest[1]
+def get_wind_direction_text(deg, lang='ru'):
+    """Переводим градусы в направление ветра на нужном языке"""
+    directions_ru = ["Северный", "Северо-восточный", "Восточный", "Юго-восточный",
+                     "Южный", "Юго-западный", "Западный", "Северо-западный"]
+    directions_kk = ["Солтүстік", "Солтүстік-шығыс", "Шығыс", "Оңтүстік-шығыс",
+                     "Оңтүстік", "Оңтүстік-батыс", "Батыс", "Солтүстік-батыс"]
+    directions_en = ["North", "Northeast", "East", "Southeast",
+                     "South", "Southwest", "West", "Northwest"]
+    
+    index = round(deg / 45) % 8
+    
+    if lang == 'kk':
+        return directions_kk[index]
+    elif lang == 'en':
+        return directions_en[index]
+    return directions_ru[index]
 
 # ==========================================
 # 5. ВНЕШНИЕ API
@@ -292,7 +300,6 @@ def analyze_pollution(air_data, wind_analysis):
 # ==========================================
 
 def get_pollutants_for_sources(active_sources, air_data):
-    """Определяем сопутствующие элементы"""
     pollutants = []
     
     if air_data:
@@ -340,7 +347,7 @@ def get_pollutants_for_sources(active_sources, air_data):
     return result
 
 def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
-    wind_dir = get_wind_direction_text(weather['wind_deg']) if weather else 'Н/Д'
+    wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'Н/Д'
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
     pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
@@ -497,64 +504,113 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
 # ==========================================
 
 def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang='ru'):
-    msg = f"🌍 **Экологический отчет**\n"
+    """Формируем ответ на языке пользователя"""
+    
+    titles = {
+        'ru': {
+            'report': "Экологический отчет",
+            'air_quality': "Качество воздуха",
+            'status': "Статус",
+            'weather': "Погода",
+            'temp': "Температура",
+            'humidity': "Влажность",
+            'wind': "Ветер",
+            'upwind': "Объекты с наветренной стороны",
+            'nearby': "Промышленных объектов рядом",
+            'wind_away': "Ветер дует в сторону от объектов.",
+            'pollutants': "Возможные сопутствующие элементы",
+            'no_data': "Нет данных",
+            'source': "Источник"
+        },
+        'kk': {
+            'report': "Экологиялық есеп",
+            'air_quality': "Ауа сапасы",
+            'status': "Статус",
+            'weather': "Ауа райы",
+            'temp': "Температура",
+            'humidity': "Ылғалдылық",
+            'wind': "Жел",
+            'upwind': "Жел жақтағы нысандар",
+            'nearby': "Жақын жердегі өнеркәсіп нысандары",
+            'wind_away': "Жел нысандардан қарама-қарсы соғып тұр.",
+            'pollutants': "Ықтимал қосымша элементтер",
+            'no_data': "Деректер жоқ",
+            'source': "Дереккөз"
+        },
+        'en': {
+            'report': "Environmental Report",
+            'air_quality': "Air Quality",
+            'status': "Status",
+            'weather': "Weather",
+            'temp': "Temperature",
+            'humidity': "Humidity",
+            'wind': "Wind",
+            'upwind': "Upwind Sources",
+            'nearby': "Nearby industrial objects",
+            'wind_away': "Wind blows away from objects.",
+            'pollutants': "Possible Additional Pollutants",
+            'no_data': "No data",
+            'source': "Source"
+        }
+    }
+    
+    t = titles.get(lang, titles['ru'])
+    
+    msg = f"🌍 **{t['report']}**\n"
     msg += f"───────────────────────\n\n"
     
     if air_data:
-        aqi = air_data.get('aqi', 'Н/Д')
-        pm25 = air_data.get('pm25', 'Н/Д')
-        pm10 = air_data.get('pm10', 'Н/Д')
-        no2 = air_data.get('no2', 'Н/Д')
-        so2 = air_data.get('so2', 'Н/Д')
-        co = air_data.get('co', 'Н/Д')
-        o3 = air_data.get('o3', 'Н/Д')
+        aqi = air_data.get('aqi', t['no_data'])
+        pm25 = air_data.get('pm25', t['no_data'])
+        pm10 = air_data.get('pm10', t['no_data'])
+        no2 = air_data.get('no2', t['no_data'])
+        so2 = air_data.get('so2', t['no_data'])
         
-        msg += f"📊 **Качество воздуха:**\n"
+        msg += f"📊 **{t['air_quality']}:**\n"
         msg += f"• AQI: {aqi}\n"
         msg += f"• PM2.5: {pm25} µg/m³\n"
         msg += f"• PM10: {pm10} µg/m³\n"
         msg += f"• NO₂: {no2} µg/m³\n"
         msg += f"• SO₂: {so2} µg/m³\n"
-        msg += f"• CO: {co} µg/m³\n"
-        msg += f"• O₃: {o3} µg/m³\n"
-        msg += f"Статус: **{pollution_analysis['level_str']}**\n\n"
+        msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
-        msg += f"📊 **Качество воздуха:** Нет данных\n"
-        msg += f"Статус: **{pollution_analysis['level_str']}**\n\n"
+        msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
     
     if weather:
-        temp = weather.get('temp', 'Н/Д')
-        humidity = weather.get('humidity', 'Н/Д')
-        wind_speed = weather.get('wind_speed', 'Н/Д')
-        wind_dir = get_wind_direction_text(weather.get('wind_deg', 0))
+        temp = weather.get('temp', t['no_data'])
+        humidity = weather.get('humidity', t['no_data'])
+        wind_speed = weather.get('wind_speed', t['no_data'])
+        wind_dir = get_wind_direction_text(weather.get('wind_deg', 0), lang)
         
-        msg += f"💨 **Погода:**\n"
-        msg += f"• Температура: {temp}°C\n"
-        msg += f"• Влажность: {humidity}%\n"
-        msg += f"• Ветер: {wind_dir}, {wind_speed} м/с\n\n"
+        msg += f"💨 **{t['weather']}:**\n"
+        msg += f"• {t['temp']}: {temp}°C\n"
+        msg += f"• {t['humidity']}: {humidity}%\n"
+        msg += f"• {t['wind']}: {wind_dir}, {wind_speed} м/с\n\n"
+    else:
+        msg += f"💨 **{t['weather']}:** {t['no_data']}\n\n"
     
     active_sources = wind_analysis.get('active_sources', [])
     total_sources = wind_analysis.get('nearby_sources_count', 0)
     
     if active_sources:
-        msg += f"🏭 **Объекты с наветренной стороны:**\n"
+        msg += f"🏭 **{t['upwind']}:**\n"
         for src in active_sources:
             msg += f"• {src['name']}\n"
         msg += "\n"
         
         pollutants = get_pollutants_for_sources(active_sources, air_data)
         if pollutants:
-            msg += f"⚠️ **Возможные сопутствующие элементы:**\n"
+            msg += f"⚠️ **{t['pollutants']}:**\n"
             for p in pollutants:
                 msg += f"• {p}\n"
             msg += "\n"
     elif total_sources > 0:
-        msg += f"🏭 **Промышленных объектов рядом:** {total_sources}\n"
-        msg += f"Ветер дует в сторону от объектов.\n\n"
+        msg += f"🏭 **{t['nearby']}:** {total_sources}\n"
+        msg += f"{t['wind_away']}\n\n"
     
     msg += f"───────────────────────\n"
     msg += f"{recommendations}"
-    msg += f"\n\n📡 _Источник: {source_name}_"
+    msg += f"\n\n📡 _{t['source']}: {source_name}_"
     
     return msg
 
@@ -657,32 +713,4 @@ def background_notifier():
         time.sleep(21600)
         for uid in list(user_ids):
             try:
-                lang = user_languages.get(str(uid), 'ru')
-                remind_text = {
-                    'ru': "🔔 Не забудьте обновить геолокацию, чтобы проверить качество воздуха!",
-                    'kk': "🔔 Ауа сапасын тексеру үшін геолокацияны жаңартуды ұмытпаңыз!",
-                    'en': "🔔 Don't forget to send your location to update air quality status!"
-                }.get(lang, "🔔 Проверьте качество воздуха!")
-                bot.send_message(uid, remind_text)
-            except Exception as e:
-                logging.error(f"Ошибка уведомления: {e}")
-
-# ==========================================
-# 11. ЗАПУСК
-# ==========================================
-
-if __name__ == '__main__':
-    acquire_pid_lock()
-    load_user_languages()
-
-    threading.Thread(target=start_health_check_server, daemon=True).start()
-    threading.Thread(target=background_notifier, daemon=True).start()
-
-    print("🚀 Бот запущен!", flush=True)
-
-    try:
-        bot.polling(none_stop=True, interval=1, timeout=30)
-    except (KeyboardInterrupt, SystemExit):
-        print("🛑 Остановка бота...", flush=True)
-    finally:
-        release_pid_lock()
+                lang = user_languages.get(str
