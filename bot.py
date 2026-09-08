@@ -325,21 +325,54 @@ def analyze_wind_and_sources(weather, sources, lat, lon):
         'nearby_sources_count': len(sources)
     }
 
-def analyze_pollution(air_data, wind_analysis):
+def analyze_pollution(air_data, wind_analysis, lang='ru'):
     aqi = air_data.get('aqi') if air_data else None
     has_active_sources = len(wind_analysis.get('active_sources', [])) > 0
 
+    # Статусы на разных языках
+    levels = {
+        'ru': {
+            1: "Чистый воздух",
+            2: "Умеренное качество",
+            3: "Вредно для чувствительных групп",
+            4: "Вредный уровень",
+            5: "Опасный уровень",
+            'risk': "Повышенный риск (ветер с промзоны)",
+            'normal': "Норма (косвенная оценка)"
+        },
+        'kk': {
+            1: "Таза ауа",
+            2: "Орташа сапа",
+            3: "Сезімтал топтар үшін зиянды",
+            4: "Зиянды деңгей",
+            5: "Қауіпті деңгей",
+            'risk': "Жоғары қауіп (өнеркәсіп аймағынан жел)",
+            'normal': "Қалыпты (жанама бағалау)"
+        },
+        'en': {
+            1: "Clean air",
+            2: "Moderate quality",
+            3: "Unhealthy for sensitive groups",
+            4: "Unhealthy level",
+            5: "Hazardous level",
+            'risk': "Increased risk (wind from industrial zone)",
+            'normal': "Normal (indirect assessment)"
+        }
+    }
+    
+    t = levels.get(lang, levels['ru'])
+    
     if aqi:
-        if aqi <= 50: level, level_code = "Чистый воздух", 1
-        elif aqi <= 100: level, level_code = "Умеренное качество", 2
-        elif aqi <= 150: level, level_code = "Вредно для чувствительных групп", 3
-        elif aqi <= 200: level, level_code = "Вредный уровень", 4
-        else: level, level_code = "Опасный уровень", 5
+        if aqi <= 50: level, level_code = t[1], 1
+        elif aqi <= 100: level, level_code = t[2], 2
+        elif aqi <= 150: level, level_code = t[3], 3
+        elif aqi <= 200: level, level_code = t[4], 4
+        else: level, level_code = t[5], 5
     else:
         if has_active_sources:
-            level, level_code = "Повышенный риск (ветер с промзоны)", 3
+            level, level_code = t['risk'], 3
         else:
-            level, level_code = "Норма (косвенная оценка)", 1
+            level, level_code = t['normal'], 1
 
     return {'level_str': level, 'level_code': level_code}
 
@@ -399,39 +432,45 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
     pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
+    # Полное название языка
     lang_names = {
-        'ru': 'Русский',
-        'kk': 'Казахский (Қазақша)',
-        'en': 'English'
+        'ru': 'Русский (Russian)',
+        'kk': 'Казахский (Kazakh, Қазақша)',
+        'en': 'Английский (English)'
     }
     lang_name = lang_names.get(lang, 'Русский')
     
+    # Промпт на русском (как основной)
     prompt = f"""
-You are an expert in ecology, toxicology and nutrition.
+Ты — эксперт по экологии, токсикологии и нутрициологии.
 
-DATA:
-- AQI: {air_data.get('aqi') if air_data else 'No data'}
-- Fine particles (PM2.5): {air_data.get('pm25') if air_data else 'No data'} µg/m3
-- Coarse dust (PM10): {air_data.get('pm10') if air_data else 'No data'} µg/m3
-- Nitrogen dioxide (NO2): {air_data.get('no2') if air_data else 'No data'} µg/m3
-- Sulfur dioxide (SO2): {air_data.get('so2') if air_data else 'No data'} µg/m3
-- Temperature: {weather.get('temp') if weather else 'N/A'}°C
-- Humidity: {weather.get('humidity') if weather else 'N/A'}%
-- Wind: {wind_dir}, {weather.get('wind_speed') if weather else 'N/A'} m/s
-- Upwind sources: {', '.join(active_names) if active_names else 'None detected'}
-- Possible pollutants: {', '.join(pollutants) if pollutants else 'Not determined'}
+ДАННЫЕ:
+- AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
+- Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- Крупная пыль (PM10): {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота (NO2): {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы (SO2): {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
+- Температура: {weather.get('temp') if weather else 'Н/Д'}°C
+- Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
+- Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
+- Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
+- Сопутствующие элементы: {', '.join(pollutants) if pollutants else 'Не определены'}
 
-Give DETAILED recommendations:
+Дай РАЗВЕРНУТЫЕ рекомендации:
 
-1. PHYSICAL ACTIVITY: can I walk, run? What to replace?
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать? Чем заменить?
 
-2. NUTRITION: 5-7 specific foods, why they help against these pollutants
+2. ПИТАНИЕ: 5-7 конкретных продуктов, почему они помогают против данных загрязнителей
 
-3. WATER INTAKE: how much and how often to drink
+3. ПИТЬЕВОЙ РЕЖИМ: сколько и как часто пить
 
-4. VITAMINS: specific vitamins and why
+4. ВИТАМИНЫ: конкретные витамины и зачем
 
-CRITICAL: Answer ONLY in {lang_name}. Do not mix languages. All food names and vitamin names must be in {lang_name}.
+КРИТИЧЕСКИ ВАЖНО:
+- Отвечай ТОЛЬКО на языке: {lang_name}
+- НЕ используй другие языки
+- Названия продуктов и витаминов пиши на {lang_name}
+- Если не знаешь перевод — используй транслитерацию
 """
     return prompt
 
@@ -802,7 +841,7 @@ def handle_location(message):
     
     print("🔍 Анализирую...", flush=True)
     wind_analysis = analyze_wind_and_sources(weather, sources, lat, lon)
-    pollution_analysis = analyze_pollution(air_data, wind_analysis)
+    pollution_analysis = analyze_pollution(air_data, wind_analysis, lang)
     
     print("🤖 Запрашиваю ИИ...", flush=True)
     recommendations = get_ai_recommendations(
