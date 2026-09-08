@@ -673,4 +673,9 @@ if __name__ == '__main__':
 
     try:
         bot.polling(none_stop=True, interval=1, timeout=30)
-    except (KeyboardInterrupt
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 Остановка бота...", flush=True)
+    except Exception as e:
+        print(f"❌ Ошибка polling: {e}", flush=True)
+    finally:
+        release_pid_lock()
