@@ -798,5 +798,8 @@ def set_language(message):
     btn = types.KeyboardButton(btn_text, request_location=True)
     loc_markup.add(btn)
 
-    confirm_msg = {
+        confirm_msg = {
         'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы от
+        'kk': "Тіл сақталды! Геолокацияңызды жіберу үшін төмендегі батырманы басыңыз.",
+        'en': "Language saved! Press the button below to send your location."
+    }.get(lang, "Язык сохранен!")
