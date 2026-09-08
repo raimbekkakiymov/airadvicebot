@@ -12,6 +12,7 @@ import json
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -141,8 +142,8 @@ def handle_location(message):
     # ШАГ 6: Делаем выводы о возможных загрязнителях
     pollution_analysis = analyze_pollution(air_data, wind_analysis)
     
-    # ШАГ 7: Запрашиваем рекомендации у DeepSeek
-    recommendations = get_deepseek_recommendations(
+    # ШАГ 7: Запрашиваем рекомендации у ИИ (Gemini → DeepSeek)
+    recommendations = get_ai_recommendations(
         air_data, weather, wind_analysis, pollution_analysis
     )
     
@@ -369,7 +370,6 @@ def analyze_pollution(air_data, wind_analysis):
     co = air_data.get('co', 0)
     o3 = air_data.get('o3', 0)
     
-    # Определяем уровень
     if pm25 <= 15:
         level = "Чистый воздух"
         emoji = "🟢"
@@ -383,7 +383,6 @@ def analyze_pollution(air_data, wind_analysis):
         level = "Опасный уровень"
         emoji = "🔴"
     
-    # Определяем повышенные загрязнители
     elevated = []
     if pm25 > 35:
         elevated.append('PM2.5')
@@ -398,7 +397,6 @@ def analyze_pollution(air_data, wind_analysis):
     if o3 > 100:
         elevated.append('O₃')
     
-    # Сопутствующие элементы
     possible_pollutants = []
     
     if 'PM2.5' in elevated:
@@ -432,19 +430,33 @@ def analyze_pollution(air_data, wind_analysis):
     }
 
 
-# ============ ШАГ 7: DEEPSEEK РЕКОМЕНДАЦИИ ============
+# ============ ШАГ 7: ИИ РЕКОМЕНДАЦИИ (GEMINI → DEEPSEEK) ============
 
-def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
-    """Запрашиваем рекомендации у DeepSeek"""
-    print("🔍 Начинаю запрос к DeepSeek...", flush=True)
+def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis):
+    """Пробуем Gemini, затем DeepSeek"""
     
-    # Проверяем ключ
-    if not DEEPSEEK_API_KEY:
-        print("❌ DEEPSEEK_API_KEY не найден", flush=True)
-        print(f"Переменные окружения: {os.environ.keys()}", flush=True)
+    # Сначала пробуем Gemini
+    if GEMINI_API_KEY:
+        print("🔍 Пробую Gemini...", flush=True)
+        result = get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis)
+        if result:
+            return result
+    
+    # Потом DeepSeek
+    if DEEPSEEK_API_KEY:
+        print("🔍 Пробую DeepSeek...", flush=True)
+        result = get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis)
+        if result:
+            return result
+    
+    print("❌ Нет доступных ИИ ключей", flush=True)
+    return None
+
+
+def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis):
+    """Запрашиваем рекомендации у Google Gemini"""
+    if not GEMINI_API_KEY:
         return None
-    
-    print(f"✅ Ключ найден: {DEEPSEEK_API_KEY[:10]}...", flush=True)
     
     try:
         context = f"""
@@ -478,11 +490,75 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
 2. ПИТАНИЕ (конкретные продукты)
 3. ПИТЬЕВОЙ РЕЖИМ
 4. ВИТАМИНЫ
-
-Учитывай конкретные загрязнители и сопутствующие элементы.
 """
         
-        print("📤 Отправляю запрос к DeepSeek API...")
+        print("📤 Отправляю запрос к Gemini...", flush=True)
+        
+        url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        body = {
+            "contents": [{"parts": [{"text": context}]}]
+        }
+        
+        response = requests.post(url, headers=headers, json=body, timeout=15)
+        
+        print(f"📥 Статус Gemini: {response.status_code}", flush=True)
+        
+        data = response.json()
+        
+        if 'candidates' in data:
+            result = data['candidates'][0]['content']['parts'][0]['text']
+            print(f"✅ Ответ Gemini получен: {result[:100]}...", flush=True)
+            return result
+        else:
+            print(f"❌ Ошибка Gemini: {data}", flush=True)
+    
+    except Exception as e:
+        print(f"❌ Gemini error: {e}", flush=True)
+    
+    return None
+
+
+def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
+    """Запрашиваем рекомендации у DeepSeek"""
+    if not DEEPSEEK_API_KEY:
+        return None
+    
+    try:
+        context = f"""
+Ты — эксперт по экологии, токсикологии и нутрициологии.
+
+ДАННЫЕ О ВОЗДУХЕ:
+- PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³
+- PM10: {pollution_analysis.get('pm10', 0)} µg/m³
+- NO₂: {pollution_analysis.get('no2', 0)} µg/m³
+- SO₂: {pollution_analysis.get('so2', 0)} µg/m³
+
+ПОГОДА:
+- Температура: {weather.get('temp', 0) if weather else 'Нет данных'}°C
+- Влажность: {weather.get('humidity', 0) if weather else 'Нет данных'}%
+- Ветер: {wind_analysis.get('wind_direction_text', 'Нет данных')}, {wind_analysis.get('wind_speed', 0)} м/с
+
+ОБЪЕКТЫ С НАВЕТРЕННОЙ СТОРОНЫ:
+"""
+        if wind_analysis.get('upwind_sources'):
+            for src in wind_analysis['upwind_sources']:
+                context += f"- {src['name']} (тип: {src['type']})\n"
+        else:
+            context += "- Не обнаружены\n"
+        
+        context += f"""
+ВОЗМОЖНЫЕ СОПУТСТВУЮЩИЕ ЭЛЕМЕНТЫ:
+{', '.join(pollution_analysis.get('possible_pollutants', [])) if pollution_analysis.get('possible_pollutants') else 'Не определены'}
+
+Дай рекомендации по:
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
+2. ПИТАНИЕ (конкретные продукты)
+3. ПИТЬЕВОЙ РЕЖИМ
+4. ВИТАМИНЫ
+"""
+        
+        print("📤 Отправляю запрос к DeepSeek...", flush=True)
         
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {
@@ -492,40 +568,29 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
         body = {
             "model": "deepseek-chat",
             "messages": [
-                {
-                    "role": "system",
-                    "content": "Ты — эксперт по экологии и нутрициологии."
-                },
-                {
-                    "role": "user",
-                    "content": context
-                }
+                {"role": "system", "content": "Ты — эксперт по экологии и нутрициологии."},
+                {"role": "user", "content": context}
             ],
             "temperature": 0.3,
             "max_tokens": 2000
         }
         
-        print(f"📡 URL: {url}")
-        print(f"📦 Body: {json.dumps(body, ensure_ascii=False)[:200]}...")
+        response = requests.post(url, headers=headers, json=body, timeout=10)
         
-        response = requests.post(url, headers=headers, json=body, timeout=30)
-        
-        print(f"📥 Статус ответа: {response.status_code}")
+        print(f"📥 Статус DeepSeek: {response.status_code}", flush=True)
         
         data = response.json()
-        print(f"📋 Ответ: {json.dumps(data, ensure_ascii=False)[:500]}")
+        print(f"📋 Ответ DeepSeek: {json.dumps(data, ensure_ascii=False)[:300]}", flush=True)
         
         if 'choices' in data:
             result = data['choices'][0]['message']['content']
-            print(f"✅ Получен ответ от DeepSeek: {result[:100]}...")
+            print(f"✅ Ответ DeepSeek получен: {result[:100]}...", flush=True)
             return result
         else:
-            print(f"❌ Ошибка в ответе: {data}")
+            print(f"❌ Ошибка DeepSeek: {data}", flush=True)
     
     except Exception as e:
-        print(f"❌ DeepSeek error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"❌ DeepSeek error: {e}", flush=True)
     
     return None
 
@@ -537,7 +602,6 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     
     text = f"{pollution_analysis['emoji']} **{get_text(user_id, 'air_quality')}: {pollution_analysis['level']}**\n\n"
     
-    # Показатели
     if air_data:
         text += "📊 **Показатели:**\n"
         if pollution_analysis.get('pm25', 0) > 0:
@@ -550,7 +614,6 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
             text += f"• SO₂: {pollution_analysis['so2']:.1f} µg/m³\n"
         text += "\n"
     
-    # Погода
     if weather:
         text += f"💨 **{get_text(user_id, 'weather_title')}:**\n"
         text += f"• {get_text(user_id, 'temp')}: {weather['temp']:.0f}°C\n"
@@ -559,20 +622,17 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     else:
         text += f"💨 **{get_text(user_id, 'weather_title')}:** Нет данных\n\n"
     
-    # Объекты с наветренной стороны
     if wind_analysis.get('upwind_sources'):
         text += f"🏭 **{get_text(user_id, 'upwind_sources')}:**\n"
         for src in wind_analysis['upwind_sources']:
             text += f"• {src['name']}\n"
         text += "\n"
     
-    # Сопутствующие элементы
     if pollution_analysis.get('possible_pollutants'):
         text += f"⚠️ **{get_text(user_id, 'possible_pollutants')}:**\n"
         text += ", ".join(pollution_analysis['possible_pollutants'])
         text += "\n\n"
     
-    # Рекомендации ИИ
     if recommendations:
         text += f"{recommendations}\n\n"
     else:
@@ -589,7 +649,6 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
 def send_reminders():
     """Отправляем напоминание каждые 12 часов"""
     while True:
-        # Ждем 12 часов (43200 секунд)
         time.sleep(43200)
         
         for user_id in user_ids.copy():
@@ -608,7 +667,6 @@ def send_reminders():
                 )
             except Exception as e:
                 print(f"Reminder error for {user_id}: {e}")
-                # Если пользователь заблокировал бота — удаляем
                 if "Forbidden" in str(e):
                     user_ids.discard(user_id)
 
@@ -642,14 +700,18 @@ if __name__ == "__main__":
     
     print("✅ Бот запущен...")
     
-    # Запускаем веб-сервер в отдельном потоке
+    try:
+        bot.delete_webhook()
+        time.sleep(2)
+    except:
+        pass
+    
     web_thread = threading.Thread(target=start_web_server, daemon=True)
     web_thread.start()
     
-    # Запускаем поток с напоминаниями
     reminder_thread = threading.Thread(target=send_reminders, daemon=True)
     reminder_thread.start()
-    print("⏰ Напоминания запущены (каждые 12 часов)")
     
-    # Запускаем бота
-    bot.polling(none_stop=True)
+    print("🔄 Начинаю polling...")
+    bot.skip_pending = True
+    bot.polling(none_stop=True, interval=1, timeout=30)
