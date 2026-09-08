@@ -202,9 +202,68 @@ def calculate_aqi_from_pm25(pm25):
     else:
         return 200
 
+# ==========================================
+# 5.1 WIKIDATA SPARQL — ПОИСК ЗАВОДОВ
+# ==========================================
+
+def get_nearby_sources_wikidata(lat, lon):
+    """Поиск промышленных объектов через Wikidata SPARQL"""
+    print("🔍 Поиск объектов через Wikidata...", flush=True)
+    try:
+        url = "https://query.wikidata.org/sparql"
+        query = f"""
+        SELECT ?item ?itemLabel ?coord WHERE {{
+          ?item wdt:P31/wdt:P279* wd:Q83405 .
+          ?item wdt:P625 ?coord .
+          SERVICE wikibase:around {{
+            ?item wdt:P625 ?location .
+            bd:serviceParam wikibase:center "Point({lon} {lat})"^^geo:wktLiteral .
+            bd:serviceParam wikibase:radius "7" .
+          }}
+          SERVICE wikibase:label {{ bd:serviceParam wikibase:language "ru,kk,en". }}
+        }}
+        LIMIT 10
+        """
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "AirAdviceBot/1.0"
+        }
+        r = requests.get(url, params={"query": query}, headers=headers, timeout=10)
+        
+        if r.status_code == 200:
+            data = r.json()
+            sources = []
+            for item in data.get('results', {}).get('bindings', []):
+                name = item.get('itemLabel', {}).get('value', 'Завод')
+                coord = item.get('coord', {}).get('value', '')
+                if coord:
+                    coords = coord.replace('Point(', '').replace(')', '').split()
+                    if len(coords) == 2:
+                        sources.append({
+                            'name': name,
+                            'lat': float(coords[1]),
+                            'lon': float(coords[0])
+                        })
+            
+            if sources:
+                print(f"✅ Wikidata: найдено {len(sources)} объектов", flush=True)
+                return sources
+    except Exception as e:
+        logging.error(f"Wikidata error: {e}")
+    
+    print("❌ Wikidata: объекты не найдены", flush=True)
+    return []
+
 def get_nearby_sources(lat, lon):
+    """Поиск объектов: Wikidata → Overpass → пусто"""
     print("🏭 Поиск объектов...", flush=True)
     
+    # 1. Wikidata SPARQL
+    sources = get_nearby_sources_wikidata(lat, lon)
+    if sources:
+        return sources
+    
+    # 2. Overpass (запасной)
     overpass_urls = [
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter"
@@ -234,7 +293,7 @@ def get_nearby_sources(lat, lon):
                     if s_lat and s_lon:
                         sources.append({'name': name, 'lat': s_lat, 'lon': s_lon})
                 if sources:
-                    print(f"✅ Найдено объектов: {len(sources)}", flush=True)
+                    print(f"✅ Overpass: найдено {len(sources)} объектов", flush=True)
                     return sources
         except Exception as e:
             logging.error(f"Overpass error: {e}")
@@ -659,57 +718,4 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
             msg += "\n"
     elif total_sources > 0:
         msg += f"🏭 **{t['nearby']}:** {total_sources}\n"
-        msg += f"{t['wind_away']}\n\n"
-    
-    msg += f"───────────────────────\n"
-    msg += f"{recommendations}"
-    msg += f"\n\n📡 _{t['source']}: {source_name}_"
-    
-    return msg
-
-def safe_send_message(chat_id, text):
-    try:
-        bot.send_message(chat_id, text, parse_mode='Markdown')
-    except:
-        try:
-            bot.send_message(chat_id, text, parse_mode=None)
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
-
-# ==========================================
-# 9. ОБРАБОТЧИКИ
-# ==========================================
-
-@bot.message_handler(commands=['start', 'help'])
-def send_welcome(message):
-    user_ids.add(message.chat.id)
-    lang_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    lang_markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
-    bot.send_message(
-        message.chat.id,
-        "Выберите язык / Тілді таңдаңыз / Choose language:",
-        reply_markup=lang_markup
-    )
-
-@bot.message_handler(func=lambda m: m.text in ['🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English'])
-def set_language(message):
-    if 'Русский' in message.text: lang = 'ru'
-    elif 'Қазақша' in message.text: lang = 'kk'
-    else: lang = 'en'
-
-    user_languages[str(message.chat.id)] = lang
-    save_user_languages()
-
-    loc_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_text = {
-        'ru': "📍 Отправить локацию",
-        'kk': "📍 Орынды жіберу",
-        'en': "📍 Send Location"
-    }.get(lang, "📍 Отправить локацию")
-
-    btn = types.KeyboardButton(btn_text, request_location=True)
-    loc_markup.add(btn)
-
-    confirm_msg = {
-        'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы проверить воздух.",
-        'kk': "Тіл сақталды! Ауа сапасын тексеру үшін төмендегі батырманы басың
+        msg
