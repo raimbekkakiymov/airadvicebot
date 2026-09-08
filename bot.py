@@ -593,6 +593,27 @@ def send_reminders():
                     user_ids.discard(user_id)
 
 
+# ============ ВЕБ-СЕРВЕР ДЛЯ RENDER ============
+from http.server import HTTPServer, BaseHTTPRequestHandler
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/plain')
+        self.end_headers()
+        self.wfile.write(b'Bot is running')
+
+def start_web_server():
+    """Запускаем простой веб-сервер, чтобы Render не отключал бота"""
+    try:
+        port = int(os.getenv('PORT', 8080))
+        server = HTTPServer(('0.0.0.0', port), HealthHandler)
+        print(f"🌐 Веб-сервер запущен на порту {port}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"Web server error: {e}")
+
+
 # ============ ЗАПУСК ============
 if __name__ == "__main__":
     if not BOT_TOKEN:
@@ -600,6 +621,10 @@ if __name__ == "__main__":
         exit(1)
     
     print("✅ Бот запущен...")
+    
+    # Запускаем веб-сервер в отдельном потоке
+    web_thread = threading.Thread(target=start_web_server, daemon=True)
+    web_thread.start()
     
     # Запускаем поток с напоминаниями
     reminder_thread = threading.Thread(target=send_reminders, daemon=True)
