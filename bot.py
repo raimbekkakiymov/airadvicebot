@@ -364,10 +364,10 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m³
-- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m³
-- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m³
-- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m³
+- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
+- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
+- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
@@ -390,10 +390,10 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m³
-- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m³
-- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m³
-- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m³
+- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
+- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
+- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
@@ -602,10 +602,10 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
         
         msg += f"📊 **{t['air_quality']}:**\n"
         msg += f"• AQI: {aqi}\n"
-        msg += f"• PM2.5: {pm25} µg/m³\n"
-        msg += f"• PM10: {pm10} µg/m³\n"
-        msg += f"• NO₂: {no2} µg/m³\n"
-        msg += f"• SO₂: {so2} µg/m³\n"
+        msg += f"• PM2.5: {pm25} µg/m3\n"
+        msg += f"• PM10: {pm10} µg/m3\n"
+        msg += f"• NO₂: {no2} µg/m3\n"
+        msg += f"• SO₂: {so2} µg/m3\n"
         msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
         msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
