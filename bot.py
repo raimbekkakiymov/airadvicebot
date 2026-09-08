@@ -12,11 +12,18 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from collections import defaultdict
 from functools import lru_cache
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from flask import Flask, request, jsonify
 import asyncio
 import aiohttp
+from flask import Flask, request, jsonify
+
+# Попытка импорта psycopg2 (опционально)
+try:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+    PSYCOPG2_AVAILABLE = True
+except ImportError:
+    PSYCOPG2_AVAILABLE = False
+    print("⚠️ psycopg2 не установлен, использую JSON файл")
 
 # ==========================================
 # 1. КОНФИГУРАЦИЯ
@@ -27,15 +34,14 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 WAQI_API_KEY = os.getenv("WAQI_API_KEY", "demo")
-DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL
+DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL (опционально)
 PORT = int(os.getenv("PORT", 8080))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-app.onrender.com
 
 # Константы
 VERSION = "3.0.0"
 CACHE_TIMEOUT = 600  # 10 минут
 RATE_LIMIT = 10  # запросов в минуту
-NOTIFICATION_INTERVAL = 21600  # 6 часов
+USER_DATA_FILE = "user_data.json"
 
 # Настройка логирования
 logging.basicConfig(
@@ -53,220 +59,158 @@ bot = telebot.TeleBot(BOT_TOKEN if BOT_TOKEN else "DUMMY_TOKEN", threaded=False)
 app = Flask(__name__)
 
 # ==========================================
-# 2. БАЗА ДАННЫХ (PostgreSQL)
+# 2. ХРАНИЛИЩЕ ДАННЫХ (JSON вместо PostgreSQL)
 # ==========================================
 
-class Database:
+class DataStore:
     def __init__(self):
-        self.conn = None
-        self.connect()
-        self.init_tables()
+        self.users = {}
+        self.air_history = {}
+        self.stats = {}
+        self.lock = threading.Lock()
+        self.load_data()
     
-    def connect(self):
+    def load_data(self):
+        """Загрузка данных из файла"""
         try:
-            if DATABASE_URL:
-                self.conn = psycopg2.connect(DATABASE_URL, sslmode='require')
-                logger.info("✅ Подключено к PostgreSQL")
-            else:
-                logger.warning("⚠️ DATABASE_URL не найден, использую JSON файл")
+            if os.path.exists(USER_DATA_FILE):
+                with open(USER_DATA_FILE, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.users = data.get('users', {})
+                    self.air_history = data.get('air_history', {})
+                    self.stats = data.get('stats', {})
+                logger.info(f"✅ Загружено {len(self.users)} пользователей")
         except Exception as e:
-            logger.error(f"❌ Ошибка подключения к БД: {e}")
-            self.conn = None
+            logger.error(f"❌ Ошибка загрузки данных: {e}")
     
-    def init_tables(self):
-        if not self.conn:
-            return
-        
+    def save_data(self):
+        """Сохранение данных в файл"""
         try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    user_id BIGINT PRIMARY KEY,
-                    username TEXT,
-                    first_name TEXT,
-                    language TEXT DEFAULT 'ru',
-                    latitude FLOAT,
-                    longitude FLOAT,
-                    created_at TIMESTAMP DEFAULT NOW(),
-                    last_active TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS air_quality_history (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT REFERENCES users(user_id),
-                    latitude FLOAT,
-                    longitude FLOAT,
-                    aqi INTEGER,
-                    pm25 FLOAT,
-                    pm10 FLOAT,
-                    no2 FLOAT,
-                    so2 FLOAT,
-                    co FLOAT,
-                    o3 FLOAT,
-                    source TEXT,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS user_stats (
-                    user_id BIGINT PRIMARY KEY REFERENCES users(user_id),
-                    total_requests INTEGER DEFAULT 0,
-                    last_request_time TIMESTAMP,
-                    daily_requests INTEGER DEFAULT 0,
-                    request_date DATE DEFAULT CURRENT_DATE
-                )
-            """)
-            
-            self.conn.commit()
-            logger.info("✅ Таблицы созданы/проверены")
+            with self.lock:
+                data = {
+                    'users': self.users,
+                    'air_history': self.air_history,
+                    'stats': self.stats
+                }
+                with open(USER_DATA_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
-            logger.error(f"❌ Ошибка создания таблиц: {e}")
+            logger.error(f"❌ Ошибка сохранения данных: {e}")
     
     def save_user(self, user_id, username, first_name, language='ru'):
-        if not self.conn:
-            return
-        
-        try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                INSERT INTO users (user_id, username, first_name, language)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (user_id) 
-                DO UPDATE SET 
-                    username = EXCLUDED.username,
-                    first_name = EXCLUDED.first_name,
-                    language = EXCLUDED.language,
-                    last_active = NOW()
-            """, (user_id, username, first_name, language))
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Ошибка сохранения пользователя: {e}")
+        """Сохранение пользователя"""
+        self.users[str(user_id)] = {
+            'user_id': user_id,
+            'username': username,
+            'first_name': first_name,
+            'language': language,
+            'latitude': None,
+            'longitude': None,
+            'created_at': datetime.now().isoformat(),
+            'last_active': datetime.now().isoformat()
+        }
+        self.save_data()
     
     def update_user_location(self, user_id, lat, lon):
-        if not self.conn:
-            return
-        
-        try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                UPDATE users 
-                SET latitude = %s, longitude = %s, last_active = NOW()
-                WHERE user_id = %s
-            """, (lat, lon, user_id))
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Ошибка обновления локации: {e}")
+        """Обновление локации пользователя"""
+        user_id_str = str(user_id)
+        if user_id_str in self.users:
+            self.users[user_id_str]['latitude'] = lat
+            self.users[user_id_str]['longitude'] = lon
+            self.users[user_id_str]['last_active'] = datetime.now().isoformat()
+            self.save_data()
     
     def update_user_language(self, user_id, language):
-        if not self.conn:
-            return
-        
-        try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                UPDATE users 
-                SET language = %s, last_active = NOW()
-                WHERE user_id = %s
-            """, (language, user_id))
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Ошибка обновления языка: {e}")
+        """Обновление языка пользователя"""
+        user_id_str = str(user_id)
+        if user_id_str in self.users:
+            self.users[user_id_str]['language'] = language
+            self.users[user_id_str]['last_active'] = datetime.now().isoformat()
+            self.save_data()
     
     def get_user(self, user_id):
-        if not self.conn:
-            return None
-        
-        try:
-            cur = self.conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT * FROM users WHERE user_id = %s", (user_id,))
-            return cur.fetchone()
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения пользователя: {e}")
-            return None
+        """Получение пользователя"""
+        return self.users.get(str(user_id))
     
     def get_all_users(self):
-        if not self.conn:
-            return []
-        
-        try:
-            cur = self.conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT * FROM users WHERE last_active > NOW() - INTERVAL '30 days'")
-            return cur.fetchall()
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения пользователей: {e}")
-            return []
+        """Получение всех активных пользователей"""
+        active_users = []
+        now = datetime.now()
+        for user_id, user_data in self.users.items():
+            try:
+                last_active = datetime.fromisoformat(user_data.get('last_active', ''))
+                if (now - last_active).days < 30:
+                    active_users.append(user_data)
+            except:
+                active_users.append(user_data)
+        return active_users
     
     def save_air_quality(self, user_id, lat, lon, air_data, source):
-        if not self.conn or not air_data:
-            return
+        """Сохранение данных о качестве воздуха"""
+        user_id_str = str(user_id)
+        if user_id_str not in self.air_history:
+            self.air_history[user_id_str] = []
         
-        try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                INSERT INTO air_quality_history 
-                (user_id, latitude, longitude, aqi, pm25, pm10, no2, so2, co, o3, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                user_id, lat, lon,
-                air_data.get('aqi'),
-                air_data.get('pm25'),
-                air_data.get('pm10'),
-                air_data.get('no2'),
-                air_data.get('so2'),
-                air_data.get('co'),
-                air_data.get('o3'),
-                source
-            ))
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Ошибка сохранения данных о воздухе: {e}")
+        self.air_history[user_id_str].append({
+            'latitude': lat,
+            'longitude': lon,
+            'air_data': air_data,
+            'source': source,
+            'created_at': datetime.now().isoformat()
+        })
+        
+        # Ограничиваем историю последними 100 записями
+        if len(self.air_history[user_id_str]) > 100:
+            self.air_history[user_id_str] = self.air_history[user_id_str][-100:]
+        
+        self.save_data()
     
     def get_air_history(self, user_id, hours=24):
-        if not self.conn:
+        """Получение истории качества воздуха"""
+        user_id_str = str(user_id)
+        history = self.air_history.get(user_id_str, [])
+        
+        if not history:
             return []
         
-        try:
-            cur = self.conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("""
-                SELECT * FROM air_quality_history 
-                WHERE user_id = %s 
-                AND created_at > NOW() - INTERVAL '%s hours'
-                ORDER BY created_at DESC
-                LIMIT 100
-            """, (user_id, hours))
-            return cur.fetchall()
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения истории: {e}")
-            return []
+        # Фильтруем по времени
+        cutoff = datetime.now() - timedelta(hours=hours)
+        filtered = []
+        for record in history:
+            try:
+                created_at = datetime.fromisoformat(record['created_at'])
+                if created_at >= cutoff:
+                    filtered.append(record)
+            except:
+                filtered.append(record)
+        
+        return filtered
     
     def update_stats(self, user_id):
-        if not self.conn:
-            return
+        """Обновление статистики пользователя"""
+        user_id_str = str(user_id)
+        if user_id_str not in self.stats:
+            self.stats[user_id_str] = {
+                'total_requests': 0,
+                'daily_requests': 0,
+                'request_date': datetime.now().date().isoformat(),
+                'last_request_time': None
+            }
         
-        try:
-            cur = self.conn.cursor()
-            cur.execute("""
-                INSERT INTO user_stats (user_id, total_requests, last_request_time, daily_requests, request_date)
-                VALUES (%s, 1, NOW(), 1, CURRENT_DATE)
-                ON CONFLICT (user_id) 
-                DO UPDATE SET 
-                    total_requests = user_stats.total_requests + 1,
-                    last_request_time = NOW(),
-                    daily_requests = CASE 
-                        WHEN user_stats.request_date = CURRENT_DATE THEN user_stats.daily_requests + 1
-                        ELSE 1
-                    END,
-                    request_date = CURRENT_DATE
-            """, (user_id,))
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"❌ Ошибка обновления статистики: {e}")
+        self.stats[user_id_str]['total_requests'] += 1
+        
+        today = datetime.now().date().isoformat()
+        if self.stats[user_id_str]['request_date'] != today:
+            self.stats[user_id_str]['daily_requests'] = 1
+            self.stats[user_id_str]['request_date'] = today
+        else:
+            self.stats[user_id_str]['daily_requests'] += 1
+        
+        self.stats[user_id_str]['last_request_time'] = datetime.now().isoformat()
+        self.save_data()
 
-# Инициализация БД
-db = Database()
+# Инициализация хранилища
+store = DataStore()
 
 # ==========================================
 # 3. КЭШИРОВАНИЕ
@@ -351,21 +295,26 @@ def get_wind_direction_text(deg, lang='ru'):
     return directions.get(lang, directions['ru'])[index]
 
 # ==========================================
-# 6. API ФУНКЦИИ (с кэшированием)
+# 6. API ФУНКЦИИ
 # ==========================================
 
-@lru_cache(maxsize=128)
-def get_weather_cached(lat, lon, timestamp):
-    """Кэшированная версия get_weather"""
+def get_weather(lat, lon):
     if not WEATHER_API_KEY:
         return None
     
+    cache_key = f"weather_{round(lat, 2)}_{round(lon, 2)}"
+    cached = cache.get(cache_key)
+    if cached:
+        logger.info("📦 Погода из кэша")
+        return cached
+    
+    logger.info("💨 Запрос погоды...")
     try:
         url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric"
         r = requests.get(url, timeout=8)
         if r.status_code == 200:
             data = r.json()
-            return {
+            result = {
                 'temp': data['main']['temp'],
                 'humidity': data['main']['humidity'],
                 'wind_speed': data['wind']['speed'],
@@ -374,93 +323,74 @@ def get_weather_cached(lat, lon, timestamp):
                 'pressure': data['main'].get('pressure'),
                 'visibility': data.get('visibility')
             }
+            cache.set(cache_key, result)
+            return result
     except Exception as e:
         logger.error(f"OpenWeatherMap error: {e}")
     return None
 
-def get_weather(lat, lon):
-    # Кэшируем на 10 минут
-    cache_key = f"weather_{round(lat,2)}_{round(lon,2)}"
-    cached = cache.get(cache_key)
-    if cached:
-        logger.info("📦 Погода из кэша")
-        return cached
-    
-    result = get_weather_cached(lat, lon, int(time.time() // CACHE_TIMEOUT))
-    if result:
-        cache.set(cache_key, result)
-    
-    return result
-
-async def get_air_quality_async(lat, lon):
-    """Асинхронное получение данных о воздухе"""
-    async with aiohttp.ClientSession() as session:
-        # Пробуем WAQI
-        try:
-            token = WAQI_API_KEY or "demo"
-            url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={token}"
-            async with session.get(url) as r:
-                data = await r.json()
-                
-                if data.get('status') == 'ok' and data.get('data'):
-                    iaqi = data['data'].get('iaqi', {})
-                    result = {
-                        'aqi': data['data'].get('aqi'),
-                        'pm25': iaqi.get('pm25', {}).get('v'),
-                        'pm10': iaqi.get('pm10', {}).get('v'),
-                        'no2': iaqi.get('no2', {}).get('v'),
-                        'so2': iaqi.get('so2', {}).get('v'),
-                        'co': iaqi.get('co', {}).get('v'),
-                        'o3': iaqi.get('o3', {}).get('v')
-                    }
-                    result = {k: v for k, v in result.items() if v is not None}
-                    if result.get('aqi') or result.get('pm25'):
-                        return result, "WAQI"
-        except Exception as e:
-            logger.error(f"WAQI error: {e}")
-        
-        # Пробуем OpenAQ
-        try:
-            url = f"https://api.openaq.org/v2/latest?coordinates={lat},{lon}&radius=25000&limit=10"
-            headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
-            async with session.get(url, headers=headers) as r:
-                data = await r.json()
-                
-                if data.get('results'):
-                    components = {}
-                    for measurement in data['results']:
-                        param = measurement.get('parameter', '')
-                        value = measurement.get('value', 0)
-                        if param in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
-                            components[param] = value
-                    
-                    if components:
-                        pm25 = components.get('pm25', 0)
-                        if pm25:
-                            components['aqi'] = calculate_aqi_from_pm25(pm25)
-                        return components, "OpenAQ"
-        except Exception as e:
-            logger.error(f"OpenAQ error: {e}")
-        
-        return None, "None"
-
 def get_best_air_data(lat, lon):
-    cache_key = f"air_{round(lat,2)}_{round(lon,2)}"
+    cache_key = f"air_{round(lat, 2)}_{round(lon, 2)}"
     cached = cache.get(cache_key)
     if cached:
         logger.info("📦 Данные о воздухе из кэша")
         return cached
     
-    # Используем asyncio для асинхронных запросов
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    result, source = loop.run_until_complete(get_air_quality_async(lat, lon))
-    loop.close()
+    logger.info("📊 Запрос качества воздуха...")
     
-    if result:
-        cache.set(cache_key, (result, source))
+    # Пробуем WAQI
+    try:
+        token = WAQI_API_KEY or "demo"
+        url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={token}"
+        r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        data = r.json()
+        
+        if data.get('status') == 'ok' and data.get('data'):
+            iaqi = data['data'].get('iaqi', {})
+            result = {
+                'aqi': data['data'].get('aqi'),
+                'pm25': iaqi.get('pm25', {}).get('v'),
+                'pm10': iaqi.get('pm10', {}).get('v'),
+                'no2': iaqi.get('no2', {}).get('v'),
+                'so2': iaqi.get('so2', {}).get('v'),
+                'co': iaqi.get('co', {}).get('v'),
+                'o3': iaqi.get('o3', {}).get('v')
+            }
+            result = {k: v for k, v in result.items() if v is not None}
+            if result.get('aqi') or result.get('pm25'):
+                logger.info(f"✅ WAQI: AQI={result.get('aqi')}")
+                cache.set(cache_key, (result, "WAQI"))
+                return result, "WAQI"
+    except Exception as e:
+        logger.error(f"WAQI error: {e}")
     
-    return result, source
+    # Пробуем OpenAQ
+    try:
+        url = f"https://api.openaq.org/v2/latest?coordinates={lat},{lon}&radius=25000&limit=10"
+        headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=8)
+        data = r.json()
+        
+        if data.get('results'):
+            components = {}
+            for measurement in data['results']:
+                param = measurement.get('parameter', '')
+                value = measurement.get('value', 0)
+                if param in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
+                    components[param] = value
+            
+            if components:
+                pm25 = components.get('pm25', 0)
+                if pm25:
+                    components['aqi'] = calculate_aqi_from_pm25(pm25)
+                logger.info(f"✅ OpenAQ: {components}")
+                cache.set(cache_key, (components, "OpenAQ"))
+                return components, "OpenAQ"
+    except Exception as e:
+        logger.error(f"OpenAQ error: {e}")
+    
+    logger.info("❌ Нет данных о воздухе")
+    return None, "None"
 
 def calculate_aqi_from_pm25(pm25):
     """Расчет AQI на основе PM2.5"""
@@ -578,8 +508,7 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     lang_name = lang_names.get(lang, 'Русский')
     
     try:
-        prompt = f"""
-Ты — эксперт по экологии и промышленной безопасности.
+        prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
 - Координаты: {lat}, {lon}
@@ -599,14 +528,13 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
 ⚠️ Сопутствующие элементы:
 • [Элемент] — [опасность]
 
-Ответь на языке: {lang_name}
-"""
+Ответь на языке: {lang_name}"""
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         body = {
             "systemInstruction": {
-                "parts": [{"text": f"Ты отвечаешь ТОЛЬКО на языке: {lang_name}. Все названия продуктов, витаминов, активности — только на {lang_name}. Не используй другие языки."}]
+                "parts": [{"text": f"Ты отвечаешь ТОЛЬКО на языке: {lang_name}."}]
             },
             "contents": [{"parts": [{"text": prompt}]}]
         }
@@ -638,8 +566,7 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
         }
         lang_name = lang_names.get(lang, 'Русский')
         
-        prompt = f"""
-Ты — эксперт по экологии, токсикологии и нутрициологии.
+        prompt = f"""Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
@@ -658,8 +585,7 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
 3. ПИТЬЕВОЙ РЕЖИМ
 4. ВИТАМИНЫ
 
-КРИТИЧЕСКИ ВАЖНО: Отвечай ТОЛЬКО на {lang_name}. Названия продуктов пиши на {lang_name}.
-"""
+КРИТИЧЕСКИ ВАЖНО: Отвечай ТОЛЬКО на {lang_name}. Названия продуктов пиши на {lang_name}."""
         
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
@@ -789,7 +715,7 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     t = titles.get(lang, titles['ru'])
     
     msg = f"🌍 **{t['report']}**\n"
-    msg += f"───────────────────────\n\n"
+    msg += "───────────────────────\n\n"
     
     if air_data:
         msg += f"📊 **{t['air_quality']}:**\n"
@@ -805,4 +731,69 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     if weather:
         msg += f"💨 **{t['weather']}:**\n"
         msg += f"• {t['temp']}: {weather['temp']}°C\n"
-        msg += f"
+        msg += f"• {t['humidity']}: {weather['humidity']}%\n"
+        msg += f"• {t['wind']}: {get_wind_direction_text(weather['wind_deg'], lang)}, {weather['wind_speed']} м/с\n"
+        if 'pressure' in weather:
+            msg += f"• {t['pressure']}: {weather['pressure']} hPa\n"
+        msg += "\n"
+    
+    if ai_source_analysis:
+        msg += f"{ai_source_analysis}\n\n"
+    
+    msg += "───────────────────────\n"
+    msg += f"{recommendations}"
+    msg += f"\n\n📡 _{t['source']}: {source_name}_"
+    msg += f"\n🕐 {datetime.now().strftime('%H:%M')}"
+    
+    return msg
+
+def safe_send_message(chat_id, text):
+    try:
+        bot.send_message(chat_id, text, parse_mode='Markdown')
+    except:
+        try:
+            bot.send_message(chat_id, text, parse_mode=None)
+        except Exception as e:
+            logger.error(f"Ошибка отправки: {e}")
+
+# ==========================================
+# 10. ОБРАБОТЧИКИ КОМАНД
+# ==========================================
+
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    user = message.from_user
+    store.save_user(user.id, user.username, user.first_name)
+    
+    lang_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    lang_markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
+    bot.send_message(
+        message.chat.id,
+        "Выберите язык / Тілді таңдаңыз / Choose language:",
+        reply_markup=lang_markup
+    )
+
+@bot.message_handler(func=lambda m: m.text in ['🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English'])
+def set_language(message):
+    user = message.from_user
+    
+    if 'Русский' in message.text: lang = 'ru'
+    elif 'Қазақша' in message.text: lang = 'kk'
+    else: lang = 'en'
+
+    store.update_user_language(user.id, lang)
+
+    loc_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_text = {
+        'ru': "📍 Отправить локацию",
+        'kk': "📍 Орынды жіберу",
+        'en': "📍 Send Location"
+    }.get(lang, "📍 Отправить локацию")
+
+    btn = types.KeyboardButton(btn_text, request_location=True)
+    loc_markup.add(btn)
+
+    confirm_msg = {
+        'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы отправить вашу геолокацию.",
+        'kk': "Тіл сақталды! Геолокацияңызды жіберу үшін төмендегі батырманы басыңыз.",
+        'en': "Language saved! Press the button below to send
