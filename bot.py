@@ -7,6 +7,7 @@ import logging
 import threading
 import requests
 import telebot
+from telebot import types
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # ==========================================
@@ -120,7 +121,8 @@ def get_weather(lat, lon):
                 'temp': data['main']['temp'],
                 'humidity': data['main']['humidity'],
                 'wind_speed': data['wind']['speed'],
-                'wind_deg': data['wind'].get('deg', 0)
+                'wind_deg': data['wind'].get('deg', 0),
+                'description': data['weather'][0]['description']
             }
     except Exception as e:
         logging.error(f"Ошибка OpenWeatherMap: {e}")
@@ -137,7 +139,11 @@ def get_best_air_data(lat, lon):
                 return {
                     'aqi': data.get('aqi'),
                     'pm25': iaqi.get('pm25', {}).get('v'),
-                    'pm10': iaqi.get('pm10', {}).get('v')
+                    'pm10': iaqi.get('pm10', {}).get('v'),
+                    'no2': iaqi.get('no2', {}).get('v'),
+                    'so2': iaqi.get('so2', {}).get('v'),
+                    'co': iaqi.get('co', {}).get('v'),
+                    'o3': iaqi.get('o3', {}).get('v')
                 }, "WAQI"
         except Exception as e:
             logging.error(f"Ошибка WAQI: {e}")
@@ -149,7 +155,7 @@ def get_best_air_data(lat, lon):
             measurements = r['results'][0].get('measurements', [])
             res = {}
             for m in measurements:
-                if m['parameter'] in ['pm25', 'pm10']:
+                if m['parameter'] in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
                     res[m['parameter']] = m['value']
             return res, "OpenAQ"
     except Exception as e:
@@ -240,16 +246,43 @@ def analyze_pollution(air_data, wind_analysis):
 # 7. РЕКОМЕНДАТЕЛЬНЫЕ ДВИЖКИ
 # ==========================================
 
+def get_wind_direction_text(deg):
+    directions = [
+        (0, "Северный"), (45, "Северо-восточный"), (90, "Восточный"),
+        (135, "Юго-восточный"), (180, "Южный"), (225, "Юго-западный"),
+        (270, "Западный"), (315, "Северо-западный")
+    ]
+    closest = min(directions, key=lambda x: abs(x[0] - deg))
+    return closest[1]
+
 def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
-    return f"""
-    Проанализируй экологическую обстановку и дай 3-4 четких, практичных совета на языке ({lang}):
-    - Индекс качества воздуха (AQI): {air_data.get('aqi') if air_data else 'Нет данных'}
-    - PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'}
-    - Температура: {weather.get('temp') if weather else 'N/A'}°C, Ветер: {weather.get('wind_speed') if weather else 'N/A'} м/с
-    - Источников загрязнения наветренно: {len(wind_analysis.get('active_sources', []))}
-    - Статус: {pollution_analysis.get('level_str')}
-    Форматируй ответ кратко, с эмодзи и списками.
-    """
+    wind_dir = get_wind_direction_text(weather['wind_deg']) if weather else 'Н/Д'
+    active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
+    
+    prompt = f"""
+Проанализируй экологическую обстановку и дай рекомендации.
+
+ДАННЫЕ:
+- AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
+- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m³
+- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m³
+- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m³
+- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m³
+- Температура: {weather.get('temp') if weather else 'Н/Д'}°C
+- Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
+- Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
+- Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
+
+Дай рекомендации по:
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ (можно ли гулять, бегать)
+2. ПИТАНИЕ (конкретные продукты)
+3. ПИТЬЕВОЙ РЕЖИМ
+4. ВИТАМИНЫ
+
+Ответь на языке: {lang}
+Форматируй кратко, с эмодзи и списками.
+"""
+    return prompt
 
 def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     if not GEMINI_API_KEY:
@@ -260,8 +293,11 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
         headers = {"Content-Type": "application/json"}
         body = {"contents": [{"parts": [{"text": prompt}]}]}
 
-        r = requests.post(url, headers=headers, json=body, timeout=12)
+        r = requests.post(url, headers=headers, json=body, timeout=15)
         data = r.json()
+        
+        logging.info(f"Gemini статус: {r.status_code}")
+        
         if 'candidates' in data and data['candidates']:
             return data['candidates'][0]['content']['parts'][0]['text']
     except Exception as e:
@@ -280,7 +316,7 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.5
         }
-        r = requests.post(url, headers=headers, json=body, timeout=12)
+        r = requests.post(url, headers=headers, json=body, timeout=15)
         data = r.json()
         if 'choices' in data and data['choices']:
             return data['choices'][0]['message']['content']
@@ -295,54 +331,54 @@ def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_a
 
     templates = {
         'ru': {
-            'title': "💡 **Рекомендации по безопасности:**",
+            'title': "💡 **Рекомендации:**",
             'status_1': "🟢 **Воздух чистый.** Отличные условия для прогулок.",
             'status_2': "🟡 **Умеренное качество.** Воздух приемлемый.",
             'status_3': "🟠 **Вредно для чувствительных групп.** Повышена концентрация частиц.",
             'status_4': "🔴 **Вредный уровень загрязнения.** Неблагоприятная обстановка.",
             'status_5': "🟣 **Опасный уровень!** Высокий риск для здоровья.",
-            'wind_threat': f"⚠️ **Внимание:** Ветер ({wind_speed} м/с) дует со стороны промзоны.",
+            'wind_threat': f"⚠️ Ветер ({wind_speed} м/с) дует со стороны промзоны.",
             'wind_clear': "🍃 Ветер дует в сторону от промышленных объектов.",
             'actions': {
-                1: ["• Наслаждайтесь активностями на улице.", "• Откройте окна для проветривания."],
-                2: ["• Проветривайте помещения.", "• Сократите длительные нагрузки на улице."],
+                1: ["• Можно бегать и гулять.", "• Откройте окна для проветривания."],
+                2: ["• Можно гулять, но без интенсивных нагрузок.", "• Проветривайте помещения."],
                 3: ["• Держите окна закрытыми.", "• Включите очиститель воздуха."],
-                4: ["• Закройте окна; не задерживайтесь на улице.", "• На улице используйте респиратор."],
-                5: ["• Не выходите на улицу без необходимости.", "• Проведите влажную уборку."]
+                4: ["• Не выходите без необходимости.", "• Используйте маску на улице."],
+                5: ["• Оставайтесь дома.", "• Проведите влажную уборку."]
             }
         },
         'kk': {
-            'title': "💡 **Қауіпсіздік ұсыныстары:**",
-            'status_1': "🟢 **Ауа таза.** Серуендеуге өте қолайлы.",
-            'status_2': "🟡 **Орташа сапа.** Ауа деңгейі қалыпты.",
+            'title': "💡 **Ұсыныстар:**",
+            'status_1': "🟢 **Ауа таза.** Серуендеуге тамаша.",
+            'status_2': "🟡 **Орташа сапа.** Ауа қалыпты.",
             'status_3': "🟠 **Сезімтал топтар үшін зиянды.**",
-            'status_4': "🔴 **Зиянды деңгей.** Денсаулыққа жағымсыз жағдай.",
-            'status_5': "🟣 **Өте қауіпті деңгей!** Жоғары қауіп бар.",
-            'wind_threat': f"⚠️ **Назар аударыңыз:** Жел ({wind_speed} м/с) өнеркәсіп аймағынан соғып тұр.",
-            'wind_clear': "🍃 Жел өнеркәсіптік нысандардан қарама-қарсы бағытта соғып тұр.",
+            'status_4': "🔴 **Зиянды деңгей.**",
+            'status_5': "🟣 **Өте қауіпті!**",
+            'wind_threat': f"⚠️ Жел ({wind_speed} м/с) өнеркәсіп аймағынан соғып тұр.",
+            'wind_clear': "🍃 Жел өнеркәсіп нысандарынан қарама-қарсы соғып тұр.",
             'actions': {
-                1: ["• Ашық ауада серуендеңіз.", "• Бөлмелерді желдетіңіз."],
-                2: ["• Бөлмені желдетуге болады.", "• Жаттығуларды азайтыңыз."],
-                3: ["• Терезелерді жабық ұстаңыз.", "• Ауа тазартқышты қосыңыз."],
-                4: ["• Терезелерді тығыз жабыңыз.", "• Далаға шығарда маска тағыңыз."],
-                5: ["• Далаға шығуды барынша шектеңіз.", "• Көбірек таза су ішіңіз."]
+                1: ["• Серуендеуге болады.", "• Бөлмелерді желдетіңіз."],
+                2: ["• Жеңіл серуендеңіз.", "• Бөлмені желдетіңіз."],
+                3: ["• Терезелерді жабыңыз.", "• Ауа тазартқышты қосыңыз."],
+                4: ["• Далаға шықпаңыз.", "• Маска тағыңыз."],
+                5: ["• Үйде болыңыз.", "• Ылғалды тазалау жасаңыз."]
             }
         },
         'en': {
-            'title': "💡 **Safety Recommendations:**",
-            'status_1': "🟢 **Good Air Quality.** Great conditions for outdoor activity.",
-            'status_2': "🟡 **Moderate Quality.** Acceptable air condition.",
-            'status_3': "🟠 **Unhealthy for Sensitive Groups.**",
-            'status_4': "🔴 **Unhealthy Level.** Adverse conditions.",
-            'status_5': "🟣 **Hazardous Level!** Serious health risk.",
-            'wind_threat': f"⚠️ **Warning:** Wind ({wind_speed} m/s) is blowing from industrial zones.",
-            'wind_clear': "🍃 Wind is blowing away from industrial facilities.",
+            'title': "💡 **Recommendations:**",
+            'status_1': "🟢 **Clean air.** Great for outdoor activities.",
+            'status_2': "🟡 **Moderate quality.** Acceptable.",
+            'status_3': "🟠 **Unhealthy for sensitive groups.**",
+            'status_4': "🔴 **Unhealthy level.**",
+            'status_5': "🟣 **Hazardous!**",
+            'wind_threat': f"⚠️ Wind ({wind_speed} m/s) blows from industrial zone.",
+            'wind_clear': "🍃 Wind blows away from industrial objects.",
             'actions': {
-                1: ["• Enjoy outdoor activities.", "• Open windows for ventilation."],
-                2: ["• Ventilate indoors.", "• Limit prolonged outdoor exertion."],
-                3: ["• Keep windows closed.", "• Use HEPA air purifiers."],
-                4: ["• Keep windows sealed.", "• Wear respirator outdoors."],
-                5: ["• Stay indoors.", "• Perform wet cleaning indoors."]
+                1: ["• Enjoy outdoor activities.", "• Open windows."],
+                2: ["• Light walks are fine.", "• Ventilate rooms."],
+                3: ["• Keep windows closed.", "• Use air purifier."],
+                4: ["• Stay indoors.", "• Wear mask outdoors."],
+                5: ["• Stay home.", "• Do wet cleaning."]
             }
         }
     }
@@ -371,34 +407,92 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
     return get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
 
 # ==========================================
-# 8. ФОРМАТИРОВАНИЕ И ОТПРАВКА ОТВЕТА
+# 8. ФОРМАТИРОВАНИЕ ОТВЕТА
 # ==========================================
 
 def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang='ru'):
-    aqi_str = air_data.get('aqi', 'N/A') if air_data else 'Н/Д'
-    pm25_str = air_data.get('pm25', 'N/A') if air_data else 'Н/Д'
-    temp_str = f"{weather['temp']}°C" if weather else 'N/A'
-    wind_str = f"{weather['wind_speed']} м/с" if weather else 'N/A'
-
-    active_cnt = len(wind_analysis.get('active_sources', []))
-    total_cnt = wind_analysis.get('nearby_sources_count', 0)
-
-    msg = f"🌍 **Экологический отчет** (Источник: {source_name})\n"
-    msg += f"───────────────────────\n"
-    msg += f"📊 **AQI:** {aqi_str} | **PM2.5:** {pm25_str}\n"
-    msg += f"🌡 **Температура:** {temp_str} | 💨 **Ветер:** {wind_str}\n"
-    msg += f"🏭 **Наветренные промзоны:** {active_cnt} из {total_cnt} рядом\n"
-    msg += f"Статус: **{pollution_analysis['level_str']}**\n"
+    """Формируем полный ответ пользователю"""
+    
+    msg = f"🌍 **Экологический отчет**\n"
     msg += f"───────────────────────\n\n"
+    
+    # Качество воздуха
+    if air_data:
+        aqi = air_data.get('aqi', 'Н/Д')
+        pm25 = air_data.get('pm25', 'Н/Д')
+        pm10 = air_data.get('pm10', 'Н/Д')
+        no2 = air_data.get('no2', 'Н/Д')
+        so2 = air_data.get('so2', 'Н/Д')
+        
+        msg += f"📊 **Качество воздуха:**\n"
+        msg += f"• AQI: {aqi}\n"
+        msg += f"• PM2.5: {pm25} µg/m³\n"
+        msg += f"• PM10: {pm10} µg/m³\n"
+        msg += f"• NO₂: {no2} µg/m³\n"
+        msg += f"• SO₂: {so2} µg/m³\n"
+        msg += f"Статус: **{pollution_analysis['level_str']}**\n\n"
+    else:
+        msg += f"📊 **Качество воздуха:** Нет данных\n"
+        msg += f"Статус: **{pollution_analysis['level_str']}**\n\n"
+    
+    # Погода
+    if weather:
+        temp = weather.get('temp', 'Н/Д')
+        humidity = weather.get('humidity', 'Н/Д')
+        wind_speed = weather.get('wind_speed', 'Н/Д')
+        wind_dir = get_wind_direction_text(weather.get('wind_deg', 0))
+        
+        msg += f"💨 **Погода:**\n"
+        msg += f"• Температура: {temp}°C\n"
+        msg += f"• Влажность: {humidity}%\n"
+        msg += f"• Ветер: {wind_dir}, {wind_speed} м/с\n\n"
+    else:
+        msg += f"💨 **Погода:** Нет данных\n\n"
+    
+    # Объекты с наветренной стороны
+    active_sources = wind_analysis.get('active_sources', [])
+    total_sources = wind_analysis.get('nearby_sources_count', 0)
+    
+    if active_sources:
+        msg += f"🏭 **Объекты с наветренной стороны:**\n"
+        for src in active_sources:
+            msg += f"• {src['name']}\n"
+        msg += "\n"
+    elif total_sources > 0:
+        msg += f"🏭 **Промышленных объектов рядом:** {total_sources}\n"
+        msg += f"Ветер дует в сторону от объектов.\n\n"
+    
+    # Сопутствующие элементы
+    if active_sources:
+        msg += f"⚠️ **Возможные сопутствующие элементы:**\n"
+        pollutants = set()
+        for src in active_sources:
+            name = src['name'].lower()
+            if 'свалка' in name or 'landfill' in name or 'waste' in name:
+                pollutants.update(['Метан', 'Сероводород', 'Аммиак'])
+            elif 'тэц' in name or 'power' in name or 'электро' in name:
+                pollutants.update(['Зола', 'Диоксид серы', 'Оксиды азота'])
+            elif 'завод' in name or 'industrial' in name or 'пром' in name:
+                pollutants.update(['Промышленная пыль', 'Летучие соединения'])
+            else:
+                pollutants.add('Промышленные выбросы')
+        msg += ", ".join(pollutants)
+        msg += "\n\n"
+    
+    msg += f"───────────────────────\n"
     msg += f"{recommendations}"
-
+    msg += f"\n\n📡 _Источник: {source_name}_"
+    
     return msg
 
 def safe_send_message(chat_id, text):
     try:
         bot.send_message(chat_id, text, parse_mode='Markdown')
     except telebot.apihelper.ApiTelegramException:
-        bot.send_message(chat_id, text, parse_mode=None)
+        try:
+            bot.send_message(chat_id, text, parse_mode=None)
+        except Exception as e:
+            logging.error(f"Ошибка отправки: {e}")
 
 # ==========================================
 # 9. ОБРАБОТЧИКИ ТЕЛЕГРАМ-БОТА
@@ -407,7 +501,7 @@ def safe_send_message(chat_id, text):
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
     user_ids.add(message.chat.id)
-    lang_markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    lang_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     lang_markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
     bot.send_message(
         message.chat.id,
@@ -424,14 +518,14 @@ def set_language(message):
     user_languages[str(message.chat.id)] = lang
     save_user_languages()
 
-    loc_markup = telebot.types.ReplyKeyboardMarkup(resize_keyboard=True)
+    loc_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_text = {
         'ru': "📍 Отправить локацию",
         'kk': "📍 Орынды жіберу",
         'en': "📍 Send Location"
     }.get(lang, "📍 Отправить локацию")
 
-    btn = telebot.types.KeyboardButton(btn_text, request_location=True)
+    btn = types.KeyboardButton(btn_text, request_location=True)
     loc_markup.add(btn)
 
     confirm_msg = {
@@ -475,7 +569,7 @@ def handle_location(message):
 
 def background_notifier():
     while True:
-        time.sleep(21600)
+        time.sleep(21600)  # 6 часов
         for uid in list(user_ids):
             try:
                 lang = user_languages.get(str(uid), 'ru')
@@ -489,19 +583,15 @@ def background_notifier():
                 logging.error(f"Ошибка отправки уведомления {uid}: {e}")
 
 # ==========================================
-# 11. ТОЧКА ВХОДА И ЗАПУСК
+# 11. ТОЧКА ВХОДА
 # ==========================================
 
 if __name__ == '__main__':
     acquire_pid_lock()
     load_user_languages()
 
-    # Запуск сервера веб-заглушки для удовлетворения требований Render
     threading.Thread(target=start_health_check_server, daemon=True).start()
-
-    # Запуск фонового потока уведомлений
-    notifier_thread = threading.Thread(target=background_notifier, daemon=True)
-    notifier_thread.start()
+    threading.Thread(target=background_notifier, daemon=True).start()
 
     print("🚀 Бот запущен!", flush=True)
 
