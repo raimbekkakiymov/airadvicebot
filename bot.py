@@ -207,10 +207,7 @@ def get_nearby_sources(lat, lon):
     
     overpass_urls = [
         "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
-        "https://overpass.openstreetmap.ru/api/interpreter",
-        "https://overpass.osm.ch/api/interpreter",
-        "https://overpass.private.coffee/api/interpreter"
+        "https://overpass.kumi.systems/api/interpreter"
     ]
     
     query = f"""
@@ -218,10 +215,7 @@ def get_nearby_sources(lat, lon):
     (
       node["landuse"="industrial"](around:7000,{lat:.6f},{lon:.6f});
       way["landuse"="industrial"](around:7000,{lat:.6f},{lon:.6f});
-      node["man_made"="chimney"](around:7000,{lat:.6f},{lon:.6f});
-      node["amenity"="waste_disposal"](around:7000,{lat:.6f},{lon:.6f});
       way["landuse"="landfill"](around:7000,{lat:.6f},{lon:.6f});
-      way["landuse"="quarry"](around:7000,{lat:.6f},{lon:.6f});
     );
     out center;
     """
@@ -236,14 +230,14 @@ def get_nearby_sources(lat, lon):
                     s_lat = el.get('lat') or el.get('center', {}).get('lat')
                     s_lon = el.get('lon') or el.get('center', {}).get('lon')
                     tags = el.get('tags', {})
-                    name = tags.get('name') or tags.get('landuse') or tags.get('man_made') or "Промзона"
+                    name = tags.get('name') or tags.get('landuse') or "Промзона"
                     if s_lat and s_lon:
                         sources.append({'name': name, 'lat': s_lat, 'lon': s_lon})
                 if sources:
                     print(f"✅ Найдено объектов: {len(sources)}", flush=True)
                     return sources
         except Exception as e:
-            logging.error(f"Overpass error ({url}): {e}")
+            logging.error(f"Overpass error: {e}")
     
     print("❌ Объекты не найдены", flush=True)
     return []
@@ -354,34 +348,31 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
     lang_name = lang_names.get(lang, 'Русский')
     
     prompt = f"""
-Ты — эксперт по экологии, токсикологии и нутрициологии.
+You are an expert in ecology, toxicology and nutrition.
 
-ДАННЫЕ:
-- AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- Крупная пыль (PM10): {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
-- Диоксид азота (NO2): {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
-- Диоксид серы (SO2): {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
-- Температура: {weather.get('temp') if weather else 'Н/Д'}°C
-- Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
-- Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
-- Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
-- Сопутствующие элементы: {', '.join(pollutants) if pollutants else 'Не определены'}
+DATA:
+- AQI: {air_data.get('aqi') if air_data else 'No data'}
+- Fine particles (PM2.5): {air_data.get('pm25') if air_data else 'No data'} µg/m3
+- Coarse dust (PM10): {air_data.get('pm10') if air_data else 'No data'} µg/m3
+- Nitrogen dioxide (NO2): {air_data.get('no2') if air_data else 'No data'} µg/m3
+- Sulfur dioxide (SO2): {air_data.get('so2') if air_data else 'No data'} µg/m3
+- Temperature: {weather.get('temp') if weather else 'N/A'}°C
+- Humidity: {weather.get('humidity') if weather else 'N/A'}%
+- Wind: {wind_dir}, {weather.get('wind_speed') if weather else 'N/A'} m/s
+- Upwind sources: {', '.join(active_names) if active_names else 'None detected'}
+- Possible pollutants: {', '.join(pollutants) if pollutants else 'Not determined'}
 
-Дай РАЗВЕРНУТЫЕ рекомендации:
+Give DETAILED recommendations:
 
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать? Чем заменить?
+1. PHYSICAL ACTIVITY: can I walk, run? What to replace?
 
-2. ПИТАНИЕ: 5-7 конкретных продуктов, почему они помогают против данных загрязнителей
+2. NUTRITION: 5-7 specific foods, why they help against these pollutants
 
-3. ПИТЬЕВОЙ РЕЖИМ: сколько и как часто пить
+3. WATER INTAKE: how much and how often to drink
 
-4. ВИТАМИНЫ: конкретные витамины и зачем
+4. VITAMINS: specific vitamins and why
 
-ВАЖНО:
-- Отвечай СТРОГО на языке: {lang_name}
-- Не смешивай языки
-- Все заголовки, списки и рекомендации должны быть на {lang_name}
+CRITICAL: Answer ONLY in {lang_name}. Do not mix languages. All food names and vitamin names must be in {lang_name}.
 """
     return prompt
 
@@ -393,12 +384,7 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
         prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
         url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        body = {
-    "systemInstruction": {
-        "parts": [{"text": f"Отвечай только на языке: {lang_name}"}]
-    },
-    "contents": [{"parts": [{"text": prompt}]}]
-}
+        body = {"contents": [{"parts": [{"text": prompt}]}]}
 
         r = requests.post(url, headers=headers, json=body, timeout=8)
         data = r.json()
@@ -437,23 +423,23 @@ def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_a
     pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
     food_map = {
-        'Метан': "🥦 Брокколи, шпинат (хлорофилл связывает токсины)",
-        'Сероводород': "🍵 Зелёный чай, куркума (антиоксиданты)",
-        'Аммиак': "💧 Обильное питьё, лимонная вода",
-        'Зола': "🍎 Яблоки, свёкла (пектин выводит тяжёлые металлы)",
-        'Диоксид серы': "🥬 Капуста, редис (крестоцветные защищают бронхи)",
-        'Оксиды азота': "🥕 Морковь, тыква (витамин A для слизистых)",
-        'Тяжёлые металлы': "🌿 Кинза, морская капуста (альгинаты связывают металлы)",
-        'Бенз(а)пирен': "🍇 Черника, виноград (ресвератрол)",
-        'Сажа': "🍵 Зелёный чай, имбирь (противовоспалительное)",
-        'Пыль': "💧 Обильное питьё, тёплые напитки",
-        'Фталаты': "🥦 Брокколи, цветная капуста (сульфорафан)",
-        'Винилхлорид': "🌿 Расторопша, кинза (поддержка печени)",
-        'Микропластик': "🦪 Морская капуста, клетчатка",
-        'Летучие соединения': "🍊 Цитрусовые, зелёный чай",
-        'Ртуть': "🦪 Морская капуста, кинза (выводят ртуть)",
-        'Бензол': "🥦 Брокколи, капуста (глюкозинолаты)",
-        'Толуол': "🍵 Зелёный чай, куркума"
+        'Метан': "🥦 Broccoli, spinach (chlorophyll binds toxins)",
+        'Сероводород': "🍵 Green tea, turmeric (antioxidants)",
+        'Аммиак': "💧 Plenty of fluids, lemon water",
+        'Зола': "🍎 Apples, beets (pectin removes heavy metals)",
+        'Диоксид серы': "🥬 Cabbage, radish (cruciferous protect bronchi)",
+        'Оксиды азота': "🥕 Carrots, pumpkin (vitamin A for mucous)",
+        'Тяжёлые металлы': "🌿 Cilantro, seaweed (alginates bind metals)",
+        'Бенз(а)пирен': "🍇 Blueberries, grapes (resveratrol)",
+        'Сажа': "🍵 Green tea, ginger (anti-inflammatory)",
+        'Пыль': "💧 Plenty of fluids, warm drinks",
+        'Фталаты': "🥦 Broccoli, cauliflower (sulforaphane)",
+        'Винилхлорид': "🌿 Milk thistle, cilantro (liver support)",
+        'Микропластик': "🦪 Seaweed, fiber",
+        'Летучие соединения': "🍊 Citrus, green tea",
+        'Ртуть': "🦪 Seaweed, cilantro (remove mercury)",
+        'Бензол': "🥦 Broccoli, cabbage (glucosinolates)",
+        'Толуол': "🍵 Green tea, turmeric"
     }
     
     recommended_foods = []
@@ -462,15 +448,9 @@ def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_a
             recommended_foods.append(food_map[p])
     
     if not recommended_foods:
-        recommended_foods = ["🥗 Сбалансированное питание: овощи, белки, цельные крупы"]
+        recommended_foods = ["🥗 Balanced diet: vegetables, proteins, whole grains"]
     
-    vitamins = ["💊 Витамин C (антиоксидант)", "💊 Омега-3 (противовоспалительное)"]
-    if 'Диоксид серы' in pollutants:
-        vitamins.append("💊 Витамин B12")
-    if 'Тяжёлые металлы' in pollutants:
-        vitamins.append("💊 Цинк, селен")
-    if 'Оксиды азота' in pollutants:
-        vitamins.append("💊 Витамин E")
+    vitamins = ["💊 Vitamin C (antioxidant)", "💊 Omega-3 (anti-inflammatory)"]
     
     activity_map = {
         'ru': {
@@ -695,7 +675,7 @@ def safe_send_message(chat_id, text):
             bot.send_message(chat_id, text, parse_mode=None)
         except Exception as e:
             logging.error(f"Ошибка отправки: {e}")
-            
+
 # ==========================================
 # 9. ОБРАБОТЧИКИ
 # ==========================================
@@ -732,86 +712,4 @@ def set_language(message):
 
     confirm_msg = {
         'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы проверить воздух.",
-        'kk': "Тіл сақталды! Ауа сапасын тексеру үшін төмендегі батырманы басыңыз.",
-        'en': "Language saved! Press the button below to check air quality."
-    }.get(lang)
-
-    bot.send_message(message.chat.id, confirm_msg, reply_markup=loc_markup)
-
-@bot.message_handler(content_types=['location'])
-def handle_location(message):
-    print("📍 Геолокация получена", flush=True)
-    user_id = str(message.chat.id)
-    user_ids.add(message.chat.id)
-    lang = user_languages.get(user_id, 'ru')
-
-    lat = float(message.location.latitude)
-    lon = float(message.location.longitude)
-
-    bot.send_chat_action(message.chat.id, 'typing')
-
-    print("📊 Получаю данные о воздухе...", flush=True)
-    air_data, source_name = get_best_air_data(lat, lon)
-    
-    print("💨 Получаю погоду...", flush=True)
-    weather = get_weather(lat, lon)
-    
-    print("🏭 Ищу объекты...", flush=True)
-    sources = get_nearby_sources(lat, lon)
-    
-    print("🔍 Анализирую...", flush=True)
-    wind_analysis = analyze_wind_and_sources(weather, sources, lat, lon)
-    pollution_analysis = analyze_pollution(air_data, wind_analysis)
-    
-    print("🤖 Запрашиваю ИИ...", flush=True)
-    recommendations = get_ai_recommendations(
-        air_data, weather, wind_analysis, pollution_analysis, lang
-    )
-    
-    print("📤 Формирую ответ...", flush=True)
-    response = format_full_response(
-        air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang
-    )
-    
-    print("✅ Отправляю ответ...", flush=True)
-    safe_send_message(message.chat.id, response)
-    print("📨 Ответ отправлен", flush=True)
-
-# ==========================================
-# 10. ФОНОВЫЕ ЗАДАЧИ
-# ==========================================
-
-def background_notifier():
-    while True:
-        time.sleep(21600)
-        for uid in list(user_ids):
-            try:
-                lang = user_languages.get(str(uid), 'ru')
-                remind_text = {
-                    'ru': "🔔 Не забудьте обновить геолокацию, чтобы проверить качество воздуха!",
-                    'kk': "🔔 Ауа сапасын тексеру үшін геолокацияны жаңартуды ұмытпаңыз!",
-                    'en': "🔔 Don't forget to send your location to update air quality status!"
-                }.get(lang, "🔔 Проверьте качество воздуха!")
-                bot.send_message(uid, remind_text)
-            except Exception as e:
-                logging.error(f"Ошибка уведомления: {e}")
-
-# ==========================================
-# 11. ЗАПУСК
-# ==========================================
-
-if __name__ == '__main__':
-    acquire_pid_lock()
-    load_user_languages()
-
-    threading.Thread(target=start_health_check_server, daemon=True).start()
-    threading.Thread(target=background_notifier, daemon=True).start()
-
-    print("🚀 Бот запущен!", flush=True)
-
-    try:
-        bot.polling(none_stop=True, interval=1, timeout=30)
-    except (KeyboardInterrupt, SystemExit):
-        print("🛑 Остановка бота...", flush=True)
-    finally:
-        release_pid_lock()
+        'kk': "Тіл сақталды! Ауа сапасын тексеру үшін төмендегі батырманы басың
