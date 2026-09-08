@@ -292,6 +292,14 @@ def analyze_wind_and_sources(weather, sources, lat, lon):
 
 def analyze_pollution(air_data, wind_analysis, lang='ru'):
     aqi = air_data.get('aqi') if air_data else None
+    pm25 = air_data.get('pm25') if air_data else None
+    
+    # Проверка противоречий в данных
+    if pm25 and pm25 > 25 and (not aqi or aqi < 50):
+        print(f"⚠️ Несоответствие: PM2.5={pm25}, AQI={aqi}. Пересчитываю...", flush=True)
+        aqi = calculate_aqi_from_pm25(pm25)
+        print(f"✅ Новый AQI: {aqi}", flush=True)
+    
     has_active_sources = len(wind_analysis.get('active_sources', [])) > 0
 
     levels = {
@@ -345,7 +353,7 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-    prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
+        prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
 - Координаты: {lat}, {lon}
@@ -358,7 +366,11 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
 - Диоксид серы (SO2): {air_data.get('so2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
 - Диоксид азота (NO2): {air_data.get('no2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
 
-ВАЖНО: Используй свои знания о географии. Определи, что может находиться с наветренной стороны и какие загрязнители они выделяют.
+ВАЖНО: 
+1. Используй свои знания о географии координат {lat}, {lon}
+2. Определи КОНКРЕТНЫЕ объекты поблизости (заводы, ТЭЦ, магистрали, свалки)
+3. Если не знаешь точных названий, укажи наиболее вероятные для этого региона
+4. Учитывай, что ветер дует С {wind_dir_text} направления
 
 ФОРМАТ ОТВЕТА (обязательно):
 🏭 Вероятные источники:
@@ -393,7 +405,7 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-    prompt = f"""Ты — эксперт по экологии, токсикологии и нутрициологии.
+        prompt = f"""Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 ДАННЫЕ О ВОЗДУХЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
@@ -410,12 +422,15 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis,
 
 СТАТУС: {pollution_analysis.get('level_str', 'Неизвестно')}
 
-Дай РАЗВЕРНУТЫЕ рекомендации:
+Дай рекомендации:
 
-1. 🏃‍♂️ ФИЗИЧЕСКАЯ АКТИВНОСТЬ
-2. 🥗 ПИТАНИЕ: 5-7 продуктов с объяснением пользы
-3. 💧 ПИТЬЕВОЙ РЕЖИМ
-4. 💊 ВИТАМИНЫ И ДОБАВКИ
+1. 🏃‍♂️ ФИЗИЧЕСКАЯ АКТИВНОСТЬ (1-2 предложения)
+2. 🥗 ПИТАНИЕ: 5-7 продуктов (кратко, с пользой)
+3. 💧 ПИТЬЕВОЙ РЕЖИМ (1 предложение)
+4. 💊 ВИТАМИНЫ И ДОБАВКИ (3-5 штук)
+
+ФОРМАТ: Кратко и по делу. Каждый пункт 1-2 предложения.
+Не используй длинные объяснения.
 
 КРИТИЧЕСКИ ВАЖНО: 
 - Отвечай ТОЛЬКО на {lang_name}
@@ -481,13 +496,24 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     msg = f"🌍 **{t['report']}**\n"
     msg += "───────────────────────\n\n"
     
-    if air_data:
+        if air_data:
         msg += f"📊 **{t['air_quality']}:**\n"
         msg += f"• AQI: {air_data.get('aqi', t['no_data'])}\n"
         msg += f"• PM2.5: {air_data.get('pm25', t['no_data'])} µg/m3\n"
         msg += f"• PM10: {air_data.get('pm10', t['no_data'])} µg/m3\n"
         msg += f"• NO2: {air_data.get('no2', t['no_data'])} µg/m3\n"
         msg += f"• SO2: {air_data.get('so2', t['no_data'])} µg/m3\n"
+        
+        # Предупреждение о PM2.5
+        pm25 = air_data.get('pm25')
+        if pm25 and pm25 > 25:
+            if lang == 'ru':
+                msg += f"⚠️ PM2.5 превышает норму ВОЗ (25 µg/m3)\n"
+            elif lang == 'kk':
+                msg += f"⚠️ PM2.5 ДДҰ нормасынан асып түсті (25 µg/m3)\n"
+            else:
+                msg += f"⚠️ PM2.5 exceeds WHO limit (25 µg/m3)\n"
+        
         msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
         msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
