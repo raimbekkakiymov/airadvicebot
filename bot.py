@@ -33,7 +33,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-WAQI_API_KEY = os.getenv("WAQI_API_KEY")
+WAQI_API_KEY = os.getenv("WAQI_API_KEY") or "demo"
 
 PID_FILE = "bot.pid"
 USER_LANG_FILE = "user_languages.json"
@@ -129,9 +129,10 @@ def get_weather(lat, lon):
     return None
 
 def get_best_air_data(lat, lon):
-    if WAQI_API_KEY:
-        try:
-            url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_API_KEY}"
+    # Всегда пробуем WAQI с demo токеном
+    try:
+        token = WAQI_API_KEY or "demo"
+        url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={token}"
             r = requests.get(url, timeout=10).json()
             if r.get('status') == 'ok':
                 data = r['data']
