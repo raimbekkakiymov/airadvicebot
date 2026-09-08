@@ -351,8 +351,42 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
     pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
+    # Полное название языка для ИИ
+    lang_names = {
+        'ru': 'Русский (Russian)',
+        'kk': 'Казахский (Kazakh, Қазақша)',
+        'en': 'Английский (English)'
+    }
+    lang_name = lang_names.get(lang, 'Русский')
+    
     prompt = f"""
 Ты — эксперт по экологии, токсикологии и нутрициологии.
+
+ДАННЫЕ:
+- AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
+- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m³
+- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m³
+- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m³
+- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m³
+- Температура: {weather.get('temp') if weather else 'Н/Д'}°C
+- Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
+- Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
+- Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
+- Сопутствующие элементы: {', '.join(pollutants) if pollutants else 'Не определены'}
+
+Дай РАЗВЕРНУТЫЕ рекомендации:
+
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать? Чем заменить?
+
+2. ПИТАНИЕ: 5-7 конкретных продуктов, почему они помогают против данных загрязнителей
+
+3. ПИТЬЕВОЙ РЕЖИМ: сколько и как часто пить
+
+4. ВИТАМИНЫ: конкретные витамины и зачем
+
+ВАЖНО: Отвечай на языке: {lang_name}
+"""
+    return prompt
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
