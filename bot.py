@@ -680,12 +680,122 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     return msg
 
 def safe_send_message(chat_id, text):
-    try:
-        bot.send_message(chat_id, text, parse_mode='Markdown')
-    except:
-        try:
-            bot.send_message(chat_id, text, parse_mode=None)
-        except Exception as e:
-            logging.error(f"Ошибка отправки: {e}")
+    # ==========================================
+# 9. ОБРАБОТЧИКИ
+# ==========================================
 
-# =
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    user_ids.add(message.chat.id)
+    lang_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    lang_markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
+    bot.send_message(
+        message.chat.id,
+        "Выберите язык / Тілді таңдаңыз / Choose language:",
+        reply_markup=lang_markup
+    )
+
+@bot.message_handler(func=lambda m: m.text in ['🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English'])
+def set_language(message):
+    if 'Русский' in message.text: lang = 'ru'
+    elif 'Қазақша' in message.text: lang = 'kk'
+    else: lang = 'en'
+
+    user_languages[str(message.chat.id)] = lang
+    save_user_languages()
+
+    loc_markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    btn_text = {
+        'ru': "📍 Отправить локацию",
+        'kk': "📍 Орынды жіберу",
+        'en': "📍 Send Location"
+    }.get(lang, "📍 Отправить локацию")
+
+    btn = types.KeyboardButton(btn_text, request_location=True)
+    loc_markup.add(btn)
+
+    confirm_msg = {
+        'ru': "Язык сохранен! Нажмите кнопку ниже, чтобы проверить воздух.",
+        'kk': "Тіл сақталды! Ауа сапасын тексеру үшін төмендегі батырманы басыңыз.",
+        'en': "Language saved! Press the button below to check air quality."
+    }.get(lang)
+
+    bot.send_message(message.chat.id, confirm_msg, reply_markup=loc_markup)
+
+@bot.message_handler(content_types=['location'])
+def handle_location(message):
+    print("📍 Геолокация получена", flush=True)
+    user_id = str(message.chat.id)
+    user_ids.add(message.chat.id)
+    lang = user_languages.get(user_id, 'ru')
+
+    lat = float(message.location.latitude)
+    lon = float(message.location.longitude)
+
+    bot.send_chat_action(message.chat.id, 'typing')
+
+    print("📊 Получаю данные о воздухе...", flush=True)
+    air_data, source_name = get_best_air_data(lat, lon)
+    
+    print("💨 Получаю погоду...", flush=True)
+    weather = get_weather(lat, lon)
+    
+    print("🏭 Ищу объекты...", flush=True)
+    sources = get_nearby_sources(lat, lon)
+    
+    print("🔍 Анализирую...", flush=True)
+    wind_analysis = analyze_wind_and_sources(weather, sources, lat, lon)
+    pollution_analysis = analyze_pollution(air_data, wind_analysis)
+    
+    print("🤖 Запрашиваю ИИ...", flush=True)
+    recommendations = get_ai_recommendations(
+        air_data, weather, wind_analysis, pollution_analysis, lang
+    )
+    
+    print("📤 Формирую ответ...", flush=True)
+    response = format_full_response(
+        air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang
+    )
+    
+    print("✅ Отправляю ответ...", flush=True)
+    safe_send_message(message.chat.id, response)
+    print("📨 Ответ отправлен", flush=True)
+
+# ==========================================
+# 10. ФОНОВЫЕ ЗАДАЧИ
+# ==========================================
+
+def background_notifier():
+    while True:
+        time.sleep(21600)
+        for uid in list(user_ids):
+            try:
+                lang = user_languages.get(str(uid), 'ru')
+                remind_text = {
+                    'ru': "🔔 Не забудьте обновить геолокацию, чтобы проверить качество воздуха!",
+                    'kk': "🔔 Ауа сапасын тексеру үшін геолокацияны жаңартуды ұмытпаңыз!",
+                    'en': "🔔 Don't forget to send your location to update air quality status!"
+                }.get(lang, "🔔 Проверьте качество воздуха!")
+                bot.send_message(uid, remind_text)
+            except Exception as e:
+                logging.error(f"Ошибка уведомления: {e}")
+
+# ==========================================
+# 11. ЗАПУСК
+# ==========================================
+
+if __name__ == '__main__':
+    acquire_pid_lock()
+    load_user_languages()
+
+    threading.Thread(target=start_health_check_server, daemon=True).start()
+    threading.Thread(target=background_notifier, daemon=True).start()
+
+    print("🚀 Бот запущен!", flush=True)
+
+    try:
+        bot.polling(none_stop=True, interval=1, timeout=30)
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 Остановка бота...", flush=True)
+    finally:
+        release_pid_lock()
