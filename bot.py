@@ -20,8 +20,8 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ============ ХРАНЕНИЕ ЯЗЫКОВ ============
-user_languages = {}  # {user_id: "ru"}
-user_ids = set()  # Множество user_id
+user_languages = {}
+user_ids = set()
 
 # ============ ПЕРЕВОДЫ ============
 TRANSLATIONS = {
@@ -35,10 +35,10 @@ TRANSLATIONS = {
         "humidity": "Влажность",
         "upwind_sources": "Объекты с наветренной стороны",
         "possible_pollutants": "Возможные сопутствующие элементы",
-        "ai_error": "Не удалось получить рекомендации ИИ. Проверьте API ключ.",
+        "ai_error": "Не удалось получить рекомендации ИИ.",
         "updated": "Обновлено автоматически",
         "data_source": "Данные",
-        "reminder": "⏰ **Проверьте качество воздуха!**\n\nПрошло 12 часов с последней проверки.\nНажмите кнопку ниже, чтобы получить свежие данные о воздухе и рекомендации для вашего здоровья."
+        "reminder": "⏰ **Проверьте качество воздуха!**\n\nПрошло 12 часов с последней проверки.\nНажмите кнопку ниже, чтобы получить свежие данные."
     },
     "kz": {
         "welcome": "🌍 **AirAdvice**\n\nТілді таңдаңыз:",
@@ -65,23 +65,36 @@ TRANSLATIONS = {
         "humidity": "Humidity",
         "upwind_sources": "Upwind sources",
         "possible_pollutants": "Possible additional pollutants",
-        "ai_error": "Failed to get AI recommendations. Check API key.",
+        "ai_error": "Failed to get AI recommendations.",
         "updated": "Updated automatically",
         "data_source": "Data source",
-        "reminder": "⏰ **Check air quality!**\n\n12 hours have passed since your last check.\nTap the button below to get fresh air quality data and health recommendations."
+        "reminder": "⏰ **Check air quality!**\n\n12 hours have passed since your last check.\nTap the button below to get fresh air quality data."
     }
 }
 
 def get_text(user_id, key):
-    """Получаем текст на языке пользователя"""
     lang = user_languages.get(user_id, "ru")
     return TRANSLATIONS[lang].get(key, TRANSLATIONS["ru"][key])
 
-# ============ ШАГ 1: ГЕОПОЗИЦИЯ ============
+# ============ ЗАЩИТА ОТ ДВОЙНОГО ЗАПУСКА ============
+
+def ensure_single_instance():
+    try:
+        lock_file = open('/tmp/airbot.lock', 'w')
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        print("🔒 Блокировка установлена", flush=True)
+        return lock_file
+    except IOError:
+        print("❌ Бот уже запущен! Выход...", flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"⚠️ Ошибка блокировки: {e}", flush=True)
+        return None
+
+# ============ ОБРАБОТЧИКИ КОМАНД ============
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Приветствие и выбор языка"""
     user_id = message.from_user.id
     user_languages[user_id] = "ru"
     
@@ -102,7 +115,6 @@ def send_welcome(message):
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
 def handle_language(call):
-    """Обработка выбора языка"""
     user_id = call.from_user.id
     lang = call.data.split('_')[1]
     user_languages[user_id] = lang
@@ -123,34 +135,25 @@ def handle_language(call):
 
 @bot.message_handler(content_types=['location'])
 def handle_location(message):
-    """Обработка геолокации и запуск анализа"""
     user_id = message.from_user.id
     lat = message.location.latitude
     lon = message.location.longitude
     
+    print(f"📍 Получена геолокация: {lat}, {lon}", flush=True)
     bot.send_chat_action(message.chat.id, 'typing')
     
-    # ШАГ 2: Берем анализ качества воздуха
     air_data, source_name = get_best_air_data(lat, lon)
-    
-    # ШАГ 3: Берем погоду (ветер, влажность)
     weather = get_weather(lat, lon)
-    
-    # ШАГ 4: Ищем объекты вокруг
     sources = get_nearby_sources(lat, lon)
-    
-    # ШАГ 5: Определяем, откуда дует ветер и какие объекты там находятся
     wind_analysis = analyze_wind_and_sources(weather, sources)
-    
-    # ШАГ 6: Делаем выводы о возможных загрязнителях
     pollution_analysis = analyze_pollution(air_data, wind_analysis)
     
-    # ШАГ 7: Запрашиваем рекомендации у ИИ ( → DeepSeek)
+    print("🔔 Вызываю get_ai_recommendations...", flush=True)
     recommendations = get_ai_recommendations(
         air_data, weather, wind_analysis, pollution_analysis
     )
+    print(f"🔔 Результат ИИ: {recommendations[:50] if recommendations else 'None'}", flush=True)
     
-    # ШАГ 8: Формируем полный ответ пользователю
     response = format_full_response(
         air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, user_id
     )
@@ -158,15 +161,13 @@ def handle_location(message):
     bot.send_message(message.chat.id, response, parse_mode='Markdown')
 
 
-# ============ ШАГ 2: СБОР ДАННЫХ О ВОЗДУХЕ ============
+# ============ СБОР ДАННЫХ ============
 
 def get_air_quality_waqi(lat, lon):
-    """WAQI API (бесплатный demo token)"""
     try:
         url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token=demo"
         response = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         data = response.json()
-        
         if data.get('status') == 'ok' and data.get('data'):
             iaqi = data['data'].get('iaqi', {})
             return {
@@ -178,18 +179,16 @@ def get_air_quality_waqi(lat, lon):
                 'o3': iaqi.get('o3', {}).get('v', 0)
             }
     except Exception as e:
-        print(f"WAQI error: {e}")
+        print(f"WAQI error: {e}", flush=True)
     return None
 
 
 def get_air_quality_openaq(lat, lon):
-    """OpenAQ API (бесплатный)"""
     try:
         url = f"https://api.openaq.org/v2/latest?coordinates={lat},{lon}&radius=10000&limit=10"
         headers = {"Accept": "application/json", "User-Agent": "Mozilla/5.0"}
         response = requests.get(url, headers=headers, timeout=10)
         data = response.json()
-        
         if data.get('results'):
             components = {'pm25': 0, 'pm10': 0, 'no2': 0, 'so2': 0, 'co': 0, 'o3': 0}
             for measurement in data['results']:
@@ -199,28 +198,23 @@ def get_air_quality_openaq(lat, lon):
                     components[param] = value
             return components
     except Exception as e:
-        print(f"OpenAQ error: {e}")
+        print(f"OpenAQ error: {e}", flush=True)
     return None
 
 
 def get_best_air_data(lat, lon):
-    """Пробуем все источники"""
     air_data = get_air_quality_waqi(lat, lon)
     if air_data and any(air_data.values()):
         return air_data, "WAQI"
-    
     air_data = get_air_quality_openaq(lat, lon)
     if air_data and any(air_data.values()):
         return air_data, "OpenAQ"
-    
     return None, None
 
 
-# ============ ШАГ 3: ПОГОДА ============
-
 def get_weather(lat, lon):
-    """OpenWeatherMap API"""
     if not WEATHER_API_KEY:
+        print("❌ WEATHER_API_KEY не найден", flush=True)
         return None
     try:
         url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={WEATHER_API_KEY}&units=metric"
@@ -234,12 +228,11 @@ def get_weather(lat, lon):
             'description': data['weather'][0]['description']
         }
     except Exception as e:
-        print(f"Weather error: {e}")
+        print(f"Weather error: {e}", flush=True)
     return None
 
 
 def get_wind_direction_text(deg):
-    """Переводим градусы в текст"""
     directions = [
         (0, "Северный"), (45, "Северо-восточный"), (90, "Восточный"),
         (135, "Юго-восточный"), (180, "Южный"), (225, "Юго-западный"),
@@ -249,10 +242,9 @@ def get_wind_direction_text(deg):
     return closest[1]
 
 
-# ============ ШАГ 4: ПОИСК ОБЪЕКТОВ ============
+# ============ ПОИСК ОБЪЕКТОВ ============
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
-    """Вычисляем направление от объекта к пользователю"""
     lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
     x = math.sin(dlon) * math.cos(lat2)
@@ -262,7 +254,6 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
 
 
 def get_nearby_sources(lat, lon):
-    """OpenStreetMap: ищем заводы, свалки, ТЭЦ"""
     try:
         overpass_url = "https://overpass-api.de/api/interpreter"
         query = f"""
@@ -281,7 +272,6 @@ def get_nearby_sources(lat, lon):
         sources = []
         for element in data.get('elements', []):
             tags = element.get('tags', {})
-            
             if 'center' in element:
                 obj_lat = element['center'].get('lat', lat)
                 obj_lon = element['center'].get('lon', lon)
@@ -301,23 +291,17 @@ def get_nearby_sources(lat, lon):
                 continue
             
             bearing = calculate_bearing(obj_lat, obj_lon, lat, lon)
-            
-            sources.append({
-                'type': src_type,
-                'name': name,
-                'bearing': bearing
-            })
+            sources.append({'type': src_type, 'name': name, 'bearing': bearing})
         
         return sources[:5]
     except Exception as e:
-        print(f"OSM error: {e}")
+        print(f"OSM error: {e}", flush=True)
         return []
 
 
-# ============ ШАГ 5: АНАЛИЗ ВЕТРА ============
+# ============ АНАЛИЗ ============
 
 def analyze_wind_and_sources(weather, sources):
-    """Определяем, какие объекты находятся с наветренной стороны"""
     if not weather:
         return {
             'wind_direction_text': "Неизвестно",
@@ -331,8 +315,7 @@ def analyze_wind_and_sources(weather, sources):
     upwind_sources = []
     
     for src in sources:
-        wind_from = check_wind_from_source(wind_deg, src['bearing'])
-        if wind_from:
+        if check_wind_from_source(wind_deg, src['bearing']):
             src_copy = src.copy()
             src_copy['wind_from'] = True
             upwind_sources.append(src_copy)
@@ -346,23 +329,17 @@ def analyze_wind_and_sources(weather, sources):
 
 
 def check_wind_from_source(wind_deg, source_bearing):
-    """Проверяем, дует ли ветер со стороны источника"""
     diff = abs(wind_deg - source_bearing)
     if diff > 180:
         diff = 360 - diff
     return diff < 45
 
 
-# ============ ШАГ 6: АНАЛИЗ ЗАГРЯЗНЕНИЯ ============
-
 def analyze_pollution(air_data, wind_analysis):
-    """Делаем выводы о возможных загрязнителях"""
     if not air_data:
         return {
-            'level': 'unknown',
-            'emoji': '⚪',
-            'elevated': [],
-            'possible_pollutants': [],
+            'level': 'unknown', 'emoji': '⚪',
+            'elevated': [], 'possible_pollutants': [],
             'pm25': 0, 'pm10': 0, 'no2': 0, 'so2': 0, 'co': 0, 'o3': 0
         }
     
@@ -387,21 +364,14 @@ def analyze_pollution(air_data, wind_analysis):
         emoji = "🔴"
     
     elevated = []
-    if pm25 > 35:
-        elevated.append('PM2.5')
-    if pm10 > 60:
-        elevated.append('PM10')
-    if no2 > 80:
-        elevated.append('NO₂')
-    if so2 > 50:
-        elevated.append('SO₂')
-    if co > 5:
-        elevated.append('CO')
-    if o3 > 100:
-        elevated.append('O₃')
+    if pm25 > 35: elevated.append('PM2.5')
+    if pm10 > 60: elevated.append('PM10')
+    if no2 > 80: elevated.append('NO₂')
+    if so2 > 50: elevated.append('SO₂')
+    if co > 5: elevated.append('CO')
+    if o3 > 100: elevated.append('O₃')
     
     possible_pollutants = []
-    
     if 'PM2.5' in elevated:
         possible_pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
     if 'NO₂' in elevated:
@@ -420,32 +390,22 @@ def analyze_pollution(air_data, wind_analysis):
     possible_pollutants = list(set(possible_pollutants))
     
     return {
-        'level': level,
-        'emoji': emoji,
+        'level': level, 'emoji': emoji,
         'elevated': elevated,
         'possible_pollutants': possible_pollutants,
-        'pm25': pm25,
-        'pm10': pm10,
-        'no2': no2,
-        'so2': so2,
-        'co': co,
-        'o3': o3
+        'pm25': pm25, 'pm10': pm10, 'no2': no2, 'so2': so2, 'co': co, 'o3': o3
     }
 
 
-# ============ ШАГ 7: ИИ РЕКОМЕНДАЦИИ ( → DEEPSEEK) ============
+# ============ ИИ РЕКОМЕНДАЦИИ ============
 
 def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis):
-    """Пробуем Gemini, затем DeepSeek"""
-    
-    # Сначала пробуем Gemini
     if GEMINI_API_KEY:
         print("🔍 Пробую Gemini...", flush=True)
         result = get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis)
         if result:
             return result
     
-    # Потом DeepSeek
     if DEEPSEEK_API_KEY:
         print("🔍 Пробую DeepSeek...", flush=True)
         result = get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis)
@@ -457,64 +417,27 @@ def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis)
 
 
 def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis):
-    """Запрашиваем рекомендации у Google Gemini"""
     if not GEMINI_API_KEY:
         return None
     
     try:
-        context = f"""
-Ты — эксперт по экологии, токсикологии и нутрициологии.
-
-ДАННЫЕ О ВОЗДУХЕ:
-- PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³
-- PM10: {pollution_analysis.get('pm10', 0)} µg/m³
-- NO₂: {pollution_analysis.get('no2', 0)} µg/m³
-- SO₂: {pollution_analysis.get('so2', 0)} µg/m³
-
-ПОГОДА:
-- Температура: {weather.get('temp', 0) if weather else 'Нет данных'}°C
-- Влажность: {weather.get('humidity', 0) if weather else 'Нет данных'}%
-- Ветер: {wind_analysis.get('wind_direction_text', 'Нет данных')}, {wind_analysis.get('wind_speed', 0)} м/с
-
-ОБЪЕКТЫ С НАВЕТРЕННОЙ СТОРОНЫ:
-"""
-        if wind_analysis.get('upwind_sources'):
-            for src in wind_analysis['upwind_sources']:
-                context += f"- {src['name']} (тип: {src['type']})\n"
-        else:
-            context += "- Не обнаружены\n"
-        
-        context += f"""
-ВОЗМОЖНЫЕ СОПУТСТВУЮЩИЕ ЭЛЕМЕНТЫ:
-{', '.join(pollution_analysis.get('possible_pollutants', [])) if pollution_analysis.get('possible_pollutants') else 'Не определены'}
-
-Дай рекомендации по:
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
-2. ПИТАНИЕ (конкретные продукты)
-3. ПИТЬЕВОЙ РЕЖИМ
-4. ВИТАМИНЫ
-
-Учитывай конкретные загрязнители и сопутствующие элементы.
-"""
+        context = build_ai_context(air_data, weather, wind_analysis, pollution_analysis)
         
         print("📤 Отправляю запрос к Gemini...", flush=True)
         
-        # ИСПРАВЛЕННАЯ МОДЕЛЬ: gemini-2.0-flash
         url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
-        body = {
-            "contents": [{"parts": [{"text": context}]}]
-        }
+        body = {"contents": [{"parts": [{"text": context}]}]}
         
         response = requests.post(url, headers=headers, json=body, timeout=15)
-        
         print(f"📥 Статус Gemini: {response.status_code}", flush=True)
         
         data = response.json()
+        print(f"📋 Ответ Gemini: {json.dumps(data, ensure_ascii=False)[:300]}", flush=True)
         
         if 'candidates' in data:
             result = data['candidates'][0]['content']['parts'][0]['text']
-            print(f"✅ Ответ Gemini получен: {result[:100]}...", flush=True)
+            print(f"✅ Ответ Gemini получен", flush=True)
             return result
         else:
             print(f"❌ Ошибка Gemini: {data}", flush=True)
@@ -526,43 +449,11 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
 
 
 def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
-    """Запрашиваем рекомендации у DeepSeek"""
     if not DEEPSEEK_API_KEY:
         return None
     
     try:
-        context = f"""
-Ты — эксперт по экологии, токсикологии и нутрициологии.
-
-ДАННЫЕ О ВОЗДУХЕ:
-- PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³
-- PM10: {pollution_analysis.get('pm10', 0)} µg/m³
-- NO₂: {pollution_analysis.get('no2', 0)} µg/m³
-- SO₂: {pollution_analysis.get('so2', 0)} µg/m³
-
-ПОГОДА:
-- Температура: {weather.get('temp', 0) if weather else 'Нет данных'}°C
-- Влажность: {weather.get('humidity', 0) if weather else 'Нет данных'}%
-- Ветер: {wind_analysis.get('wind_direction_text', 'Нет данных')}, {wind_analysis.get('wind_speed', 0)} м/с
-
-ОБЪЕКТЫ С НАВЕТРЕННОЙ СТОРОНЫ:
-"""
-        if wind_analysis.get('upwind_sources'):
-            for src in wind_analysis['upwind_sources']:
-                context += f"- {src['name']} (тип: {src['type']})\n"
-        else:
-            context += "- Не обнаружены\n"
-        
-        context += f"""
-ВОЗМОЖНЫЕ СОПУТСТВУЮЩИЕ ЭЛЕМЕНТЫ:
-{', '.join(pollution_analysis.get('possible_pollutants', [])) if pollution_analysis.get('possible_pollutants') else 'Не определены'}
-
-Дай рекомендации по:
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
-2. ПИТАНИЕ (конкретные продукты)
-3. ПИТЬЕВОЙ РЕЖИМ
-4. ВИТАМИНЫ
-"""
+        context = build_ai_context(air_data, weather, wind_analysis, pollution_analysis)
         
         print("📤 Отправляю запрос к DeepSeek...", flush=True)
         
@@ -582,7 +473,6 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
         }
         
         response = requests.post(url, headers=headers, json=body, timeout=10)
-        
         print(f"📥 Статус DeepSeek: {response.status_code}", flush=True)
         
         data = response.json()
@@ -590,7 +480,7 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
         
         if 'choices' in data:
             result = data['choices'][0]['message']['content']
-            print(f"✅ Ответ DeepSeek получен: {result[:100]}...", flush=True)
+            print(f"✅ Ответ DeepSeek получен", flush=True)
             return result
         else:
             print(f"❌ Ошибка DeepSeek: {data}", flush=True)
@@ -601,11 +491,47 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
     return None
 
 
-# ============ ШАГ 8: ФОРМИРОВАНИЕ ОТВЕТА ============
+def build_ai_context(air_data, weather, wind_analysis, pollution_analysis):
+    context = f"""
+Ты — эксперт по экологии, токсикологии и нутрициологии.
+
+ДАННЫЕ О ВОЗДУХЕ:
+- PM2.5: {pollution_analysis.get('pm25', 0)} µg/m³
+- PM10: {pollution_analysis.get('pm10', 0)} µg/m³
+- NO₂: {pollution_analysis.get('no2', 0)} µg/m³
+- SO₂: {pollution_analysis.get('so2', 0)} µg/m³
+
+ПОГОДА:
+- Температура: {weather.get('temp', 0) if weather else 'Нет данных'}°C
+- Влажность: {weather.get('humidity', 0) if weather else 'Нет данных'}%
+- Ветер: {wind_analysis.get('wind_direction_text', 'Нет данных')}, {wind_analysis.get('wind_speed', 0)} м/с
+
+ОБЪЕКТЫ С НАВЕТРЕННОЙ СТОРОНЫ:
+"""
+    if wind_analysis.get('upwind_sources'):
+        for src in wind_analysis['upwind_sources']:
+            context += f"- {src['name']} (тип: {src['type']})\n"
+    else:
+        context += "- Не обнаружены\n"
+    
+    context += f"""
+ВОЗМОЖНЫЕ СОПУТСТВУЮЩИЕ ЭЛЕМЕНТЫ:
+{', '.join(pollution_analysis.get('possible_pollutants', [])) if pollution_analysis.get('possible_pollutants') else 'Не определены'}
+
+Дай рекомендации по:
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
+2. ПИТАНИЕ (конкретные продукты)
+3. ПИТЬЕВОЙ РЕЖИМ
+4. ВИТАМИНЫ
+
+Учитывай конкретные загрязнители и сопутствующие элементы.
+"""
+    return context
+
+
+# ============ ФОРМИРОВАНИЕ ОТВЕТА ============
 
 def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, user_id):
-    """Формируем полный ответ пользователю"""
-    
     text = f"{pollution_analysis['emoji']} **{get_text(user_id, 'air_quality')}: {pollution_analysis['level']}**\n\n"
     
     if air_data:
@@ -650,34 +576,23 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     return text
 
 
-# ============ ФУНКЦИЯ НАПОМИНАНИЙ ============
+# ============ НАПОМИНАНИЯ ============
 
 def send_reminders():
-    """Отправляем напоминание каждые 12 часов"""
     while True:
         time.sleep(43200)
-        
         for user_id in user_ids.copy():
             try:
                 markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-                markup.add(types.KeyboardButton(
-                    get_text(user_id, "send_location"), 
-                    request_location=True
-                ))
-                
-                bot.send_message(
-                    user_id,
-                    get_text(user_id, "reminder"),
-                    reply_markup=markup,
-                    parse_mode='Markdown'
-                )
+                markup.add(types.KeyboardButton(get_text(user_id, "send_location"), request_location=True))
+                bot.send_message(user_id, get_text(user_id, "reminder"), reply_markup=markup, parse_mode='Markdown')
             except Exception as e:
-                print(f"Reminder error for {user_id}: {e}")
+                print(f"Reminder error: {e}", flush=True)
                 if "Forbidden" in str(e):
                     user_ids.discard(user_id)
 
 
-# ============ ВЕБ-СЕРВЕР ДЛЯ RENDER ============
+# ============ ВЕБ-СЕРВЕР ============
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -688,29 +603,45 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'Bot is running')
 
 def start_web_server():
-    """Запускаем простой веб-сервер, чтобы Render не отключал бота"""
     try:
         port = int(os.getenv('PORT', 8080))
         server = HTTPServer(('0.0.0.0', port), HealthHandler)
-        print(f"🌐 Веб-сервер запущен на порту {port}")
+        print(f"🌐 Веб-сервер запущен на порту {port}", flush=True)
         server.serve_forever()
     except Exception as e:
-        print(f"Web server error: {e}")
+        print(f"Web server error: {e}", flush=True)
 
 
 # ============ ЗАПУСК ============
 if __name__ == "__main__":
+    lock_file = ensure_single_instance()
+    
     if not BOT_TOKEN:
-        print("❌ BOT_TOKEN не найден")
+        print("❌ BOT_TOKEN не найден", flush=True)
         exit(1)
     
-    print("✅ Бот запущен...")
+    print("✅ Бот запущен...", flush=True)
+    
+    def signal_handler(sig, frame):
+        print("🛑 Останавливаю бота...", flush=True)
+        if lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except:
+                pass
+        sys.exit(0)
+    
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
     try:
-        bot.delete_webhook()
-        time.sleep(2)
-    except:
-        pass
+        bot.delete_webhook(drop_pending_updates=True)
+        print("🔄 Webhook удален, старые обновления сброшены", flush=True)
+        time.sleep(5)
+    except Exception as e:
+        print(f"⚠️ Ошибка удаления webhook: {e}", flush=True)
+        time.sleep(5)
     
     web_thread = threading.Thread(target=start_web_server, daemon=True)
     web_thread.start()
@@ -718,6 +649,6 @@ if __name__ == "__main__":
     reminder_thread = threading.Thread(target=send_reminders, daemon=True)
     reminder_thread.start()
     
-    print("🔄 Начинаю polling...")
+    print("🔄 Начинаю polling...", flush=True)
     bot.skip_pending = True
     bot.polling(none_stop=True, interval=1, timeout=30)
