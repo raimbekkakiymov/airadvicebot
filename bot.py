@@ -6,6 +6,7 @@ import math
 from datetime import datetime
 import threading
 import time
+import json
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -435,9 +436,13 @@ def analyze_pollution(air_data, wind_analysis):
 
 def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_analysis):
     """Запрашиваем рекомендации у DeepSeek"""
+    print("🔍 Начинаю запрос к DeepSeek...")
+    
     if not DEEPSEEK_API_KEY:
-        print("DeepSeek API key not found")
+        print("❌ DeepSeek API key not found")
         return None
+    
+    print(f"✅ Ключ найден: {DEEPSEEK_API_KEY[:10]}...")
     
     try:
         context = f"""
@@ -475,6 +480,8 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
 Учитывай конкретные загрязнители и сопутствующие элементы.
 """
         
+        print("📤 Отправляю запрос к DeepSeek API...")
+        
         url = "https://api.deepseek.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -496,16 +503,27 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
             "max_tokens": 2000
         }
         
+        print(f"📡 URL: {url}")
+        print(f"📦 Body: {json.dumps(body, ensure_ascii=False)[:200]}...")
+        
         response = requests.post(url, headers=headers, json=body, timeout=30)
+        
+        print(f"📥 Статус ответа: {response.status_code}")
+        
         data = response.json()
+        print(f"📋 Ответ: {json.dumps(data, ensure_ascii=False)[:500]}")
         
         if 'choices' in data:
-            return data['choices'][0]['message']['content']
+            result = data['choices'][0]['message']['content']
+            print(f"✅ Получен ответ от DeepSeek: {result[:100]}...")
+            return result
         else:
-            print(f"DeepSeek response: {data}")
+            print(f"❌ Ошибка в ответе: {data}")
     
     except Exception as e:
-        print(f"DeepSeek error: {e}")
+        print(f"❌ DeepSeek error: {e}")
+        import traceback
+        traceback.print_exc()
     
     return None
 
