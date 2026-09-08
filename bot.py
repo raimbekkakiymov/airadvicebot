@@ -7,6 +7,9 @@ from datetime import datetime
 import threading
 import time
 import json
+import fcntl
+import sys
+import signal
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
