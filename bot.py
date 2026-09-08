@@ -112,7 +112,7 @@ def get_wind_direction_text(deg):
     return closest[1]
 
 # ==========================================
-# 5. ВНЕШНИЕ API (с короткими таймаутами)
+# 5. ВНЕШНИЕ API
 # ==========================================
 
 def get_weather(lat, lon):
@@ -201,9 +201,13 @@ def calculate_aqi_from_pm25(pm25):
 
 def get_nearby_sources(lat, lon):
     print("🏭 Поиск объектов...", flush=True)
+    
     overpass_urls = [
         "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter"
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://overpass.openstreetmap.ru/api/interpreter",
+        "https://overpass.osm.ch/api/interpreter",
+        "https://overpass.private.coffee/api/interpreter"
     ]
     
     query = f"""
@@ -232,10 +236,11 @@ def get_nearby_sources(lat, lon):
                     name = tags.get('name') or tags.get('landuse') or tags.get('man_made') or "Промзона"
                     if s_lat and s_lon:
                         sources.append({'name': name, 'lat': s_lat, 'lon': s_lon})
-                print(f"✅ Найдено объектов: {len(sources)}", flush=True)
-                return sources
+                if sources:
+                    print(f"✅ Найдено объектов: {len(sources)}", flush=True)
+                    return sources
         except Exception as e:
-            logging.error(f"Overpass error: {e}")
+            logging.error(f"Overpass error ({url}): {e}")
     
     print("❌ Объекты не найдены", flush=True)
     return []
@@ -286,12 +291,61 @@ def analyze_pollution(air_data, wind_analysis):
 # 7. ИИ РЕКОМЕНДАЦИИ
 # ==========================================
 
+def get_pollutants_for_sources(active_sources, air_data):
+    """Определяем сопутствующие элементы"""
+    pollutants = []
+    
+    if air_data:
+        pm25 = air_data.get('pm25', 0) or 0
+        pm10 = air_data.get('pm10', 0) or 0
+        no2 = air_data.get('no2', 0) or 0
+        so2 = air_data.get('so2', 0) or 0
+        co = air_data.get('co', 0) or 0
+        
+        if pm25 > 35:
+            pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
+        if pm10 > 60:
+            pollutants.extend(['Дорожная пыль', 'Строительная пыль'])
+        if no2 > 80:
+            pollutants.extend(['Бенз(а)пирен', 'Угарный газ'])
+        if so2 > 50:
+            pollutants.extend(['Сульфаты', 'Кислотные аэрозоли'])
+        if co > 5:
+            pollutants.extend(['Летучие органические соединения'])
+    
+    for src in active_sources:
+        name = src['name'].lower()
+        if 'свалка' in name or 'landfill' in name or 'waste' in name:
+            pollutants.extend(['Метан', 'Сероводород', 'Аммиак', 'Меркаптаны'])
+        elif 'тэц' in name or 'power' in name or 'электро' in name:
+            pollutants.extend(['Зола', 'Диоксид серы', 'Оксиды азота', 'Ртуть'])
+        elif 'нефт' in name or 'oil' in name or 'нпз' in name:
+            pollutants.extend(['Бензол', 'Толуол', 'Сероводород', 'Фенол'])
+        elif 'хим' in name or 'chemical' in name:
+            pollutants.extend(['Фталаты', 'Винилхлорид', 'Микропластик', 'Полимерная пыль'])
+        elif 'цемент' in name or 'cement' in name:
+            pollutants.extend(['Цементная пыль', 'Оксиды кальция', 'Кремниевая пыль'])
+        elif 'метал' in name or 'metal' in name:
+            pollutants.extend(['Тяжёлые металлы', 'Металлическая пыль'])
+        else:
+            pollutants.extend(['Промышленная пыль', 'Летучие соединения'])
+    
+    seen = set()
+    result = []
+    for p in pollutants:
+        if p not in seen:
+            seen.add(p)
+            result.append(p)
+    
+    return result
+
 def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     wind_dir = get_wind_direction_text(weather['wind_deg']) if weather else 'Н/Д'
     active_names = [s['name'] for s in wind_analysis.get('active_sources', [])]
+    pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
     
     prompt = f"""
-Проанализируй экологическую обстановку и дай рекомендации.
+Ты — эксперт по экологии, токсикологии и нутрициологии.
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
@@ -303,15 +357,19 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
 - Наветренные объекты: {', '.join(active_names) if active_names else 'Не обнаружены'}
+- Сопутствующие элементы: {', '.join(pollutants) if pollutants else 'Не определены'}
 
-Дай рекомендации по:
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ (можно ли гулять, бегать)
-2. ПИТАНИЕ (конкретные продукты)
-3. ПИТЬЕВОЙ РЕЖИМ
-4. ВИТАМИНЫ
+Дай РАЗВЕРНУТЫЕ рекомендации:
+
+1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ: можно ли гулять, бегать? Чем заменить?
+
+2. ПИТАНИЕ: 5-7 конкретных продуктов, почему они помогают против данных загрязнителей
+
+3. ПИТЬЕВОЙ РЕЖИМ: сколько и как часто пить
+
+4. ВИТАМИНЫ: конкретные витамины и зачем
 
 Ответь на языке: {lang}
-Форматируй кратко, с эмодзи и списками.
 """
     return prompt
 
@@ -359,76 +417,70 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
 
 def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     risk_level = pollution_analysis.get('level_code', 1)
-    has_active_sources = len(wind_analysis.get('active_sources', [])) > 0
-    wind_speed = weather.get('wind_speed', 0) if weather else 0
-
-    templates = {
-        'ru': {
-            'title': "💡 **Рекомендации:**",
-            'status_1': "🟢 **Воздух чистый.** Отличные условия для прогулок.",
-            'status_2': "🟡 **Умеренное качество.** Воздух приемлемый.",
-            'status_3': "🟠 **Вредно для чувствительных групп.**",
-            'status_4': "🔴 **Вредный уровень.**",
-            'status_5': "🟣 **Опасный уровень!**",
-            'wind_threat': f"⚠️ Ветер ({wind_speed} м/с) дует со стороны промзоны.",
-            'wind_clear': "🍃 Ветер дует в сторону от объектов.",
-            'actions': {
-                1: ["• Можно бегать и гулять.", "• Откройте окна."],
-                2: ["• Можно гулять без интенсивных нагрузок.", "• Проветривайте помещения."],
-                3: ["• Держите окна закрытыми.", "• Включите очиститель воздуха."],
-                4: ["• Не выходите без необходимости.", "• Используйте маску."],
-                5: ["• Оставайтесь дома.", "• Проведите влажную уборку."]
-            }
-        },
-        'kk': {
-            'title': "💡 **Ұсыныстар:**",
-            'status_1': "🟢 **Ауа таза.**",
-            'status_2': "🟡 **Орташа сапа.**",
-            'status_3': "🟠 **Сезімтал топтар үшін зиянды.**",
-            'status_4': "🔴 **Зиянды деңгей.**",
-            'status_5': "🟣 **Өте қауіпті!**",
-            'wind_threat': f"⚠️ Жел ({wind_speed} м/с) өнеркәсіп аймағынан соғып тұр.",
-            'wind_clear': "🍃 Жел өнеркәсіптен қарама-қарсы.",
-            'actions': {
-                1: ["• Серуендеуге болады.", "• Терезелерді ашыңыз."],
-                2: ["• Жеңіл серуендеңіз.", "• Бөлмені желдетіңіз."],
-                3: ["• Терезелерді жабыңыз.", "• Ауа тазартқышты қосыңыз."],
-                4: ["• Далаға шықпаңыз.", "• Маска тағыңыз."],
-                5: ["• Үйде болыңыз.", "• Ылғалды тазалау."]
-            }
-        },
-        'en': {
-            'title': "💡 **Recommendations:**",
-            'status_1': "🟢 **Clean air.**",
-            'status_2': "🟡 **Moderate quality.**",
-            'status_3': "🟠 **Unhealthy for sensitive groups.**",
-            'status_4': "🔴 **Unhealthy level.**",
-            'status_5': "🟣 **Hazardous!**",
-            'wind_threat': f"⚠️ Wind ({wind_speed} m/s) from industrial zone.",
-            'wind_clear': "🍃 Wind blows away from industrial objects.",
-            'actions': {
-                1: ["• Enjoy outdoor activities.", "• Open windows."],
-                2: ["• Light walks are fine.", "• Ventilate rooms."],
-                3: ["• Keep windows closed.", "• Use air purifier."],
-                4: ["• Stay indoors.", "• Wear mask."],
-                5: ["• Stay home.", "• Do wet cleaning."]
-            }
-        }
+    pollutants = get_pollutants_for_sources(wind_analysis.get('active_sources', []), air_data)
+    
+    food_map = {
+        'Метан': "🥦 Брокколи, шпинат (хлорофилл связывает токсины)",
+        'Сероводород': "🍵 Зелёный чай, куркума (антиоксиданты)",
+        'Аммиак': "💧 Обильное питьё, лимонная вода",
+        'Зола': "🍎 Яблоки, свёкла (пектин выводит тяжёлые металлы)",
+        'Диоксид серы': "🥬 Капуста, редис (крестоцветные защищают бронхи)",
+        'Оксиды азота': "🥕 Морковь, тыква (витамин A для слизистых)",
+        'Тяжёлые металлы': "🌿 Кинза, морская капуста (альгинаты связывают металлы)",
+        'Бенз(а)пирен': "🍇 Черника, виноград (ресвератрол)",
+        'Сажа': "🍵 Зелёный чай, имбирь (противовоспалительное)",
+        'Пыль': "💧 Обильное питьё, тёплые напитки",
+        'Фталаты': "🥦 Брокколи, цветная капуста (сульфорафан)",
+        'Винилхлорид': "🌿 Расторопша, кинза (поддержка печени)",
+        'Микропластик': "🦪 Морская капуста, клетчатка",
+        'Летучие соединения': "🍊 Цитрусовые, зелёный чай",
+        'Ртуть': "🦪 Морская капуста, кинза (выводят ртуть)",
+        'Бензол': "🥦 Брокколи, капуста (глюкозинолаты)",
+        'Толуол': "🍵 Зелёный чай, куркума"
     }
-
-    t = templates.get(lang, templates['ru'])
-    res = [t['title'], t[f'status_{risk_level}']]
-
-    if has_active_sources:
-        res.append(t['wind_threat'])
-    elif wind_analysis.get('nearby_sources_count', 0) > 0:
-        res.append(t['wind_clear'])
-
-    res.append("\n📋 **Действия:**")
-    for act in t['actions'].get(risk_level, []):
-        res.append(act)
-
-    return "\n".join(res)
+    
+    recommended_foods = []
+    for p in pollutants[:5]:
+        if p in food_map:
+            recommended_foods.append(food_map[p])
+    
+    if not recommended_foods:
+        recommended_foods = ["🥗 Сбалансированное питание: овощи, белки, цельные крупы"]
+    
+    vitamins = ["💊 Витамин C (антиоксидант)", "💊 Омега-3 (противовоспалительное)"]
+    if 'Диоксид серы' in pollutants:
+        vitamins.append("💊 Витамин B12")
+    if 'Тяжёлые металлы' in pollutants:
+        vitamins.append("💊 Цинк, селен")
+    if 'Оксиды азота' in pollutants:
+        vitamins.append("💊 Витамин E")
+    
+    activity = {
+        1: "✅ Можно бегать, гулять, тренироваться на улице",
+        2: "🏃‍♂️ Можно гулять, но интенсивный бег лучше перенести в зал",
+        3: "⚠️ Лучше тренироваться в помещении. На улице — маска",
+        4: "⛔ Только в помещении. Окна закрыты",
+        5: "🚫 Оставайтесь дома. Никаких уличных тренировок"
+    }.get(risk_level, "✅ Можно гулять")
+    
+    water = {
+        1: "💧 1.5-2 литра в день",
+        2: "💧 2 литра в день",
+        3: "💧 2-2.5 литра, каждые 30 минут по глотку",
+        4: "💧 2.5-3 литра, тёплая вода",
+        5: "💧 3+ литра, обязательно тёплая"
+    }.get(risk_level, "💧 2 литра в день")
+    
+    msg = f"🏃‍♂️ **Физическая активность:**\n{activity}\n\n"
+    msg += f"🥗 **Питание:**\n"
+    for food in recommended_foods:
+        msg += f"{food}\n"
+    msg += f"\n💧 **Питьевой режим:**\n{water}\n\n"
+    msg += f"💊 **Витамины:**\n"
+    for vit in vitamins:
+        msg += f"{vit}\n"
+    
+    return msg
 
 def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
     rec = get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
@@ -454,6 +506,8 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
         pm10 = air_data.get('pm10', 'Н/Д')
         no2 = air_data.get('no2', 'Н/Д')
         so2 = air_data.get('so2', 'Н/Д')
+        co = air_data.get('co', 'Н/Д')
+        o3 = air_data.get('o3', 'Н/Д')
         
         msg += f"📊 **Качество воздуха:**\n"
         msg += f"• AQI: {aqi}\n"
@@ -461,6 +515,8 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
         msg += f"• PM10: {pm10} µg/m³\n"
         msg += f"• NO₂: {no2} µg/m³\n"
         msg += f"• SO₂: {so2} µg/m³\n"
+        msg += f"• CO: {co} µg/m³\n"
+        msg += f"• O₃: {o3} µg/m³\n"
         msg += f"Статус: **{pollution_analysis['level_str']}**\n\n"
     else:
         msg += f"📊 **Качество воздуха:** Нет данных\n"
@@ -476,8 +532,6 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
         msg += f"• Температура: {temp}°C\n"
         msg += f"• Влажность: {humidity}%\n"
         msg += f"• Ветер: {wind_dir}, {wind_speed} м/с\n\n"
-    else:
-        msg += f"💨 **Погода:** Нет данных\n\n"
     
     active_sources = wind_analysis.get('active_sources', [])
     total_sources = wind_analysis.get('nearby_sources_count', 0)
@@ -487,25 +541,16 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
         for src in active_sources:
             msg += f"• {src['name']}\n"
         msg += "\n"
+        
+        pollutants = get_pollutants_for_sources(active_sources, air_data)
+        if pollutants:
+            msg += f"⚠️ **Возможные сопутствующие элементы:**\n"
+            for p in pollutants:
+                msg += f"• {p}\n"
+            msg += "\n"
     elif total_sources > 0:
         msg += f"🏭 **Промышленных объектов рядом:** {total_sources}\n"
         msg += f"Ветер дует в сторону от объектов.\n\n"
-    
-    if active_sources:
-        msg += f"⚠️ **Возможные сопутствующие элементы:**\n"
-        pollutants = set()
-        for src in active_sources:
-            name = src['name'].lower()
-            if 'свалка' in name or 'landfill' in name or 'waste' in name:
-                pollutants.update(['Метан', 'Сероводород', 'Аммиак'])
-            elif 'тэц' in name or 'power' in name or 'электро' in name:
-                pollutants.update(['Зола', 'Диоксид серы', 'Оксиды азота'])
-            elif 'завод' in name or 'industrial' in name or 'пром' in name:
-                pollutants.update(['Промышленная пыль', 'Летучие соединения'])
-            else:
-                pollutants.add('Промышленные выбросы')
-        msg += ", ".join(pollutants)
-        msg += "\n\n"
     
     msg += f"───────────────────────\n"
     msg += f"{recommendations}"
