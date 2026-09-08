@@ -40,8 +40,12 @@ def start_health_check_server():
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 WAQI_API_KEY = os.getenv("WAQI_API_KEY") or "demo"
+
+# Настройки OpenRouter
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 PID_FILE = "bot.pid"
 USER_LANG_FILE = "user_languages.json"
@@ -90,7 +94,55 @@ def release_pid_lock():
         os.remove(PID_FILE)
 
 # ==========================================
-# 4. МАТЕМАТИКА
+# 4. OPENROUTER API ФУНКЦИИ
+# ==========================================
+
+def call_openrouter(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
+    """Универсальная функция для вызова OpenRouter API"""
+    if not OPENROUTER_API_KEY:
+        print("❌ OPENROUTER_API_KEY не установлен", flush=True)
+        return None
+    
+    try:
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://render.com",  # Обязательно для OpenRouter
+            "X-Title": "AirQualityBot"  # Название вашего приложения
+        }
+        
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
+        body = {
+            "model": OPENROUTER_MODEL,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+        
+        print(f"🤖 Запрос к OpenRouter (модель: {OPENROUTER_MODEL})...", flush=True)
+        r = requests.post(OPENROUTER_URL, headers=headers, json=body, timeout=30)
+        
+        if r.status_code == 200:
+            data = r.json()
+            if 'choices' in data and data['choices']:
+                result = data['choices'][0]['message']['content']
+                print("✅ OpenRouter ответил успешно", flush=True)
+                return result
+        else:
+            print(f"❌ OpenRouter error {r.status_code}: {r.text}", flush=True)
+    
+    except Exception as e:
+        print(f"❌ OpenRouter exception: {e}", flush=True)
+        logging.error(f"OpenRouter error: {e}")
+    
+    return None
+
+# ==========================================
+# 5. МАТЕМАТИКА
 # ==========================================
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
@@ -123,7 +175,7 @@ def get_wind_direction_text(deg, lang='ru'):
     return directions_ru[index]
 
 # ==========================================
-# 5. ВНЕШНИЕ API
+# 6. ВНЕШНИЕ API
 # ==========================================
 
 def get_weather(lat, lon):
@@ -215,7 +267,7 @@ def get_nearby_sources(lat, lon):
     return []
 
 # ==========================================
-# 6. АНАЛИЗ
+# 7. АНАЛИЗ
 # ==========================================
 
 def analyze_wind_and_sources(weather, sources, lat, lon):
@@ -277,11 +329,13 @@ def analyze_pollution(air_data, wind_analysis, lang='ru'):
     return {'level_str': level, 'level_code': level_code}
 
 # ==========================================
-# 7. ИИ: АНАЛИЗ ИСТОЧНИКОВ ПО ВЕТРУ
+# 8. OPENROUTER АНАЛИЗ ИСТОЧНИКОВ
 # ==========================================
 
 def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru'):
-    if not GEMINI_API_KEY:
+    """Анализ источников через OpenRouter"""
+    if not OPENROUTER_API_KEY:
+        print("❌ OPENROUTER_API_KEY не установлен для анализа источников", flush=True)
         return None
     
     lang_names = {
@@ -291,8 +345,7 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-    try:
-        prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
+    prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
 - Координаты: {lat}, {lon}
@@ -300,10 +353,12 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
 
 ТЕКУЩИЕ ПОКАЗАТЕЛИ ВОЗДУХА:
 - AQI: {air_data.get('aqi', 'Нет данных') if air_data else 'Нет данных'}
+- PM2.5: {air_data.get('pm25', 'Нет данных') if air_data else 'Нет данных'} µg/m3
+- PM10: {air_data.get('pm10', 'Нет данных') if air_data else 'Нет данных'} µg/m3
 - Диоксид серы (SO2): {air_data.get('so2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
 - Диоксид азота (NO2): {air_data.get('no2', 'Нет данных') if air_data else 'Нет данных'} µg/m3
 
-ВАЖНО: Используй свои знания о географии. Даже если не знаешь точное название объекта, предположи, что может находиться в этом направлении (НПЗ, ТЭЦ, свалка, химзавод и т.д.) и какие элементы они выделяют.
+ВАЖНО: Используй свои знания о географии. Определи, что может находиться с наветренной стороны и какие загрязнители они выделяют.
 
 ФОРМАТ ОТВЕТА (обязательно):
 🏭 Вероятные источники:
@@ -313,34 +368,22 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
 • [Элемент] — [опасность]
 
 Ответь на языке: {lang_name}"""
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        body = {
-            "systemInstruction": {
-                "parts": [{"text": f"Ты отвечаешь ТОЛЬКО на языке: {lang_name}."}]
-            },
-            "contents": [{"parts": [{"text": prompt}]}]
-        }
-        
-        r = requests.post(url, headers=headers, json=body, timeout=10)
-        data = r.json()
-        
-        if 'candidates' in data and data['candidates']:
-            result = data['candidates'][0]['content']['parts'][0]['text']
-            print("✅ ИИ определил источники", flush=True)
-            return result
     
-    except Exception as e:
-        logging.error(f"ИИ анализ источников: {e}")
+    system_prompt = f"Ты — эксперт по экологии. Отвечай ТОЛЬКО на языке: {lang_name}."
     
-    return None
+    print("🏭 Анализ источников через OpenRouter...", flush=True)
+    return call_openrouter(prompt, system_prompt, max_tokens=500, temperature=0.5)
 
 # ==========================================
-# 8. ИИ РЕКОМЕНДАЦИИ
+# 9. OPENROUTER РЕКОМЕНДАЦИИ
 # ==========================================
 
-def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
+def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
+    """Получение рекомендаций через OpenRouter"""
+    if not OPENROUTER_API_KEY:
+        print("❌ OPENROUTER_API_KEY не установлен для рекомендаций", flush=True)
+        return get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
+    
     wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'Н/Д'
     
     lang_names = {
@@ -352,60 +395,46 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
     
     prompt = f"""Ты — эксперт по экологии, токсикологии и нутрициологии.
 
-ДАННЫЕ:
+ДАННЫЕ О ВОЗДУХЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- Мелкие частицы: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- Крупная пыль: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
-- Диоксид азота: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
-- Диоксид серы: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
+- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
+- NO2: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
+- SO2: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
+- CO: {air_data.get('co') if air_data else 'Нет данных'} µg/m3
+
+ПОГОДА:
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
 
+СТАТУС: {pollution_analysis.get('level_str', 'Неизвестно')}
+
 Дай РАЗВЕРНУТЫЕ рекомендации:
 
-1. ФИЗИЧЕСКАЯ АКТИВНОСТЬ
-2. ПИТАНИЕ: 5-7 продуктов
-3. ПИТЬЕВОЙ РЕЖИМ
-4. ВИТАМИНЫ
+1. 🏃‍♂️ ФИЗИЧЕСКАЯ АКТИВНОСТЬ
+2. 🥗 ПИТАНИЕ: 5-7 продуктов с объяснением пользы
+3. 💧 ПИТЬЕВОЙ РЕЖИМ
+4. 💊 ВИТАМИНЫ И ДОБАВКИ
 
-КРИТИЧЕСКИ ВАЖНО: Отвечай ТОЛЬКО на {lang_name}. Названия продуктов пиши на {lang_name}."""
-    return prompt
-
-def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
-    if not GEMINI_API_KEY:
-        return None
-    print("🤖 Запрос к Gemini...", flush=True)
-    try:
-        prompt = build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang)
-        
-        lang_names = {
-            'ru': 'Русский',
-            'kk': 'Казахский (Қазақша)',
-            'en': 'English'
-        }
-        lang_name = lang_names.get(lang, 'Русский')
-        
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
-        body = {
-            "systemInstruction": {
-                "parts": [{"text": f"Отвечай только на {lang_name}"}]
-            },
-            "contents": [{"parts": [{"text": prompt}]}]
-        }
-
-        r = requests.post(url, headers=headers, json=body, timeout=8)
-        data = r.json()
-        
-        if 'candidates' in data and data['candidates']:
-            print("✅ Gemini ответил", flush=True)
-            return data['candidates'][0]['content']['parts'][0]['text']
-    except Exception as e:
-        logging.error(f"Gemini error: {e}")
-    return None
+КРИТИЧЕСКИ ВАЖНО: 
+- Отвечай ТОЛЬКО на {lang_name}
+- Названия продуктов пиши на {lang_name}
+- Используй эмодзи для наглядности"""
+    
+    system_prompt = f"Ты — эксперт по экологии и здоровью. Отвечай ТОЛЬКО на {lang_name}."
+    
+    print("🤖 Запрос рекомендаций через OpenRouter...", flush=True)
+    result = call_openrouter(prompt, system_prompt, max_tokens=1000, temperature=0.7)
+    
+    if result:
+        return result
+    
+    print("📋 Использую базовые рекомендации", flush=True)
+    return get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
 
 def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
+    """Базовые рекомендации (если OpenRouter недоступен)"""
     risk_level = pollution_analysis.get('level_code', 1)
     
     activity_map = {
@@ -430,14 +459,8 @@ def get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_a
     
     return msg
 
-def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang='ru'):
-    rec = get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
-    if rec: return rec
-    print("📋 Использую rule-based", flush=True)
-    return get_rule_based_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
-
 # ==========================================
-# 9. ФОРМАТИРОВАНИЕ ОТВЕТА
+# 10. ФОРМАТИРОВАНИЕ ОТВЕТА
 # ==========================================
 
 def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, lang='ru', ai_source_analysis=None):
@@ -481,6 +504,7 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     msg += "───────────────────────\n"
     msg += f"{recommendations}"
     msg += f"\n\n📡 _{t['source']}: {source_name}_"
+    msg += f"\n🤖 _AI: OpenRouter ({OPENROUTER_MODEL})_"
     
     return msg
 
@@ -494,7 +518,7 @@ def safe_send_message(chat_id, text):
             logging.error(f"Ошибка отправки: {e}")
 
 # ==========================================
-# 10. ОБРАБОТЧИКИ
+# 11. ОБРАБОТЧИКИ
 # ==========================================
 
 @bot.message_handler(commands=['start', 'help'])
@@ -559,14 +583,14 @@ def handle_location(message):
     wind_deg = weather.get('wind_deg', 0) if weather else 0
     wind_dir_text = get_wind_direction_text(wind_deg, lang)
     
-    print("🤖 ИИ анализирует источники...", flush=True)
+    print("🏭 Анализирую источники через OpenRouter...", flush=True)
     ai_source_analysis = get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang)
     
     sources = get_nearby_sources(lat, lon)
     wind_analysis = analyze_wind_and_sources(weather, sources, lat, lon)
     pollution_analysis = analyze_pollution(air_data, wind_analysis, lang)
     
-    print("🤖 Запрашиваю рекомендации...", flush=True)
+    print("🤖 Запрашиваю рекомендации через OpenRouter...", flush=True)
     recommendations = get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis, lang)
     
     print("📤 Формирую ответ...", flush=True)
@@ -579,7 +603,7 @@ def handle_location(message):
     safe_send_message(message.chat.id, response)
 
 # ==========================================
-# 11. ФОНОВЫЕ ЗАДАЧИ
+# 12. ФОНОВЫЕ ЗАДАЧИ
 # ==========================================
 
 def background_notifier():
@@ -598,13 +622,15 @@ def background_notifier():
                 logging.error(f"Ошибка уведомления: {e}")
 
 # ==========================================
-# 12. ЗАПУСК
+# 13. ЗАПУСК
 # ==========================================
 
 if __name__ == '__main__':
     print("=" * 50, flush=True)
     print("🚀 ЗАПУСК БОТА...", flush=True)
     print(f"🔑 BOT_TOKEN: {'✅ Установлен' if BOT_TOKEN else '❌ НЕ УСТАНОВЛЕН'}", flush=True)
+    print(f"🤖 OPENROUTER_API_KEY: {'✅ Установлен' if OPENROUTER_API_KEY else '❌ НЕ УСТАНОВЛЕН'}", flush=True)
+    print(f"🌤 WEATHER_API_KEY: {'✅ Установлен' if WEATHER_API_KEY else '❌ НЕ УСТАНОВЛЕН'}", flush=True)
     print("=" * 50, flush=True)
     
     if not BOT_TOKEN:
