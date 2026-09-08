@@ -713,4 +713,32 @@ def background_notifier():
         time.sleep(21600)
         for uid in list(user_ids):
             try:
-                lang = user_languages.get(str
+                lang = user_languages.get(str(uid), 'ru')
+                remind_text = {
+                    'ru': "🔔 Не забудьте обновить геолокацию, чтобы проверить качество воздуха!",
+                    'kk': "🔔 Ауа сапасын тексеру үшін геолокацияны жаңартуды ұмытпаңыз!",
+                    'en': "🔔 Don't forget to send your location to update air quality status!"
+                }.get(lang, "🔔 Проверьте качество воздуха!")
+                bot.send_message(uid, remind_text)
+            except Exception as e:
+                logging.error(f"Ошибка уведомления: {e}")
+
+# ==========================================
+# 11. ЗАПУСК
+# ==========================================
+
+if __name__ == '__main__':
+    acquire_pid_lock()
+    load_user_languages()
+
+    threading.Thread(target=start_health_check_server, daemon=True).start()
+    threading.Thread(target=background_notifier, daemon=True).start()
+
+    print("🚀 Бот запущен!", flush=True)
+
+    try:
+        bot.polling(none_stop=True, interval=1, timeout=30)
+    except (KeyboardInterrupt, SystemExit):
+        print("🛑 Остановка бота...", flush=True)
+    finally:
+        release_pid_lock()
