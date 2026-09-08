@@ -142,7 +142,7 @@ def handle_location(message):
     # ШАГ 6: Делаем выводы о возможных загрязнителях
     pollution_analysis = analyze_pollution(air_data, wind_analysis)
     
-    # ШАГ 7: Запрашиваем рекомендации у ИИ (Gemini → DeepSeek)
+    # ШАГ 7: Запрашиваем рекомендации у ИИ ( → DeepSeek)
     recommendations = get_ai_recommendations(
         air_data, weather, wind_analysis, pollution_analysis
     )
@@ -430,7 +430,7 @@ def analyze_pollution(air_data, wind_analysis):
     }
 
 
-# ============ ШАГ 7: ИИ РЕКОМЕНДАЦИИ (GEMINI → DEEPSEEK) ============
+# ============ ШАГ 7: ИИ РЕКОМЕНДАЦИИ ( → DEEPSEEK) ============
 
 def get_ai_recommendations(air_data, weather, wind_analysis, pollution_analysis):
     """Пробуем Gemini, затем DeepSeek"""
@@ -490,10 +490,13 @@ def get_gemini_recommendations(air_data, weather, wind_analysis, pollution_analy
 2. ПИТАНИЕ (конкретные продукты)
 3. ПИТЬЕВОЙ РЕЖИМ
 4. ВИТАМИНЫ
+
+Учитывай конкретные загрязнители и сопутствующие элементы.
 """
         
         print("📤 Отправляю запрос к Gemini...", flush=True)
         
+        # ИСПРАВЛЕННАЯ МОДЕЛЬ: gemini-2.0-flash
         url = f"https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"
         headers = {"Content-Type": "application/json"}
         body = {
