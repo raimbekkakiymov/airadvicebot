@@ -353,7 +353,7 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     }
     lang_name = lang_names.get(lang, 'Русский')
     
-        prompt = f"""Ты — эксперт по экологии и промышленной безопасности.
+    prompt = f"""Ты — эксперт по экологии и промышленной безопасности."""
 
 ПОЛЬЗОВАТЕЛЬ НАХОДИТСЯ:
 - Координаты: {lat}, {lon}
