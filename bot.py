@@ -156,11 +156,11 @@ def get_best_air_data(lat, lon):
             result = {
                 'aqi': data['data'].get('aqi'),
                 'pm25': iaqi.get('pm25', {}).get('v'),
-                'pm10': iaqi.get('pm10', {}).get('v'),
-                'no2': iaqi.get('no2', {}).get('v'),
-                'so2': iaqi.get('so2', {}).get('v'),
+                'Крупная пыль (PM10)': iaqi.get('Крупная пыль (PM10)', {}).get('v'),
+                'Диоксид азота': iaqi.get('Диоксид азота', {}).get('v'),
+                'Диоксид серы': iaqi.get('Диоксид серы', {}).get('v'),
                 'co': iaqi.get('co', {}).get('v'),
-                'o3': iaqi.get('o3', {}).get('v')
+                'Озон': iaqi.get('Озон', {}).get('v')
             }
             result = {k: v for k, v in result.items() if v is not None}
             if result.get('aqi') or result.get('pm25'):
@@ -180,7 +180,7 @@ def get_best_air_data(lat, lon):
             for measurement in data['results']:
                 param = measurement.get('parameter', '')
                 value = measurement.get('value', 0)
-                if param in ['pm25', 'pm10', 'no2', 'so2', 'co', 'o3']:
+                if param in ['pm25', 'Крупная пыль (PM10)', 'Диоксид азота', 'Диоксид серы', 'co', 'Озон']:
                     components[param] = value
             
             if components:
@@ -304,18 +304,18 @@ def get_pollutants_for_sources(active_sources, air_data):
     
     if air_data:
         pm25 = air_data.get('pm25', 0) or 0
-        pm10 = air_data.get('pm10', 0) or 0
-        no2 = air_data.get('no2', 0) or 0
-        so2 = air_data.get('so2', 0) or 0
+        Крупная пыль (PM10) = air_data.get('Крупная пыль (PM10)', 0) or 0
+        Диоксид азота = air_data.get('Диоксид азота', 0) or 0
+        Диоксид серы = air_data.get('Диоксид серы', 0) or 0
         co = air_data.get('co', 0) or 0
         
         if pm25 > 35:
             pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
-        if pm10 > 60:
+        if Крупная пыль (PM10) > 60:
             pollutants.extend(['Дорожная пыль', 'Строительная пыль'])
-        if no2 > 80:
+        if Диоксид азота > 80:
             pollutants.extend(['Бенз(а)пирен', 'Угарный газ'])
-        if so2 > 50:
+        if Диоксид серы > 50:
             pollutants.extend(['Сульфаты', 'Кислотные аэрозоли'])
         if co > 5:
             pollutants.extend(['Летучие органические соединения'])
@@ -364,10 +364,10 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
-- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
-- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
+- Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- Крупная пыль (PM10): {air_data.get('Крупная пыль (PM10)') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота: {air_data.get('Диоксид азота') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы: {air_data.get('Диоксид серы') if air_data else 'Нет данных'} µg/m3
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
@@ -390,10 +390,10 @@ def build_ai_prompt(air_data, weather, wind_analysis, pollution_analysis, lang='
 
 ДАННЫЕ:
 - AQI: {air_data.get('aqi') if air_data else 'Нет данных'}
-- PM2.5: {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
-- PM10: {air_data.get('pm10') if air_data else 'Нет данных'} µg/m3
-- NO₂: {air_data.get('no2') if air_data else 'Нет данных'} µg/m3
-- SO₂: {air_data.get('so2') if air_data else 'Нет данных'} µg/m3
+- Мелкие частицы (PM2.5): {air_data.get('pm25') if air_data else 'Нет данных'} µg/m3
+- Крупная пыль (PM10): {air_data.get('Крупная пыль (PM10)') if air_data else 'Нет данных'} µg/m3
+- Диоксид азота: {air_data.get('Диоксид азота') if air_data else 'Нет данных'} µg/m3
+- Диоксид серы: {air_data.get('Диоксид серы') if air_data else 'Нет данных'} µg/m3
 - Температура: {weather.get('temp') if weather else 'Н/Д'}°C
 - Влажность: {weather.get('humidity') if weather else 'Н/Д'}%
 - Ветер: {wind_dir}, {weather.get('wind_speed') if weather else 'Н/Д'} м/с
@@ -596,16 +596,16 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     if air_data:
         aqi = air_data.get('aqi', t['no_data'])
         pm25 = air_data.get('pm25', t['no_data'])
-        pm10 = air_data.get('pm10', t['no_data'])
-        no2 = air_data.get('no2', t['no_data'])
-        so2 = air_data.get('so2', t['no_data'])
+        Крупная пыль (PM10) = air_data.get('Крупная пыль (PM10)', t['no_data'])
+        Диоксид азота = air_data.get('Диоксид азота', t['no_data'])
+        Диоксид серы = air_data.get('Диоксид серы', t['no_data'])
         
         msg += f"📊 **{t['air_quality']}:**\n"
         msg += f"• AQI: {aqi}\n"
-        msg += f"• PM2.5: {pm25} µg/m3\n"
-        msg += f"• PM10: {pm10} µg/m3\n"
-        msg += f"• NO₂: {no2} µg/m3\n"
-        msg += f"• SO₂: {so2} µg/m3\n"
+        msg += f"• Мелкие частицы (PM2.5): {pm25} µg/m3\n"
+        msg += f"• Крупная пыль (PM10): {Крупная пыль (PM10)} µg/m3\n"
+        msg += f"• Диоксид азота: {Диоксид азота} µg/m3\n"
+        msg += f"• Диоксид серы: {Диоксид серы} µg/m3\n"
         msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
         msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
