@@ -4,6 +4,8 @@ import requests
 import os
 import math
 from datetime import datetime
+import threading
+import time
 
 # ============ НАСТРОЙКИ ============
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -12,19 +14,103 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+# ============ ХРАНЕНИЕ ЯЗЫКОВ ============
+user_languages = {}  # {user_id: "ru"}
+user_ids = set()  # Множество user_id
+
+# ============ ПЕРЕВОДЫ ============
+TRANSLATIONS = {
+    "ru": {
+        "welcome": "🌍 **AirAdvice**\n\nВыберите язык:",
+        "send_location": "📍 Отправить местоположение",
+        "air_quality": "Качество воздуха",
+        "weather_title": "Погода",
+        "wind": "Ветер",
+        "temp": "Температура",
+        "humidity": "Влажность",
+        "upwind_sources": "Объекты с наветренной стороны",
+        "possible_pollutants": "Возможные сопутствующие элементы",
+        "ai_error": "Не удалось получить рекомендации ИИ. Проверьте API ключ.",
+        "updated": "Обновлено автоматически",
+        "data_source": "Данные",
+        "reminder": "⏰ **Проверьте качество воздуха!**\n\nПрошло 12 часов с последней проверки.\nНажмите кнопку ниже, чтобы получить свежие данные о воздухе и рекомендации для вашего здоровья."
+    },
+    "kz": {
+        "welcome": "🌍 **AirAdvice**\n\nТілді таңдаңыз:",
+        "send_location": "📍 Орналасқан жерді жіберу",
+        "air_quality": "Ауа сапасы",
+        "weather_title": "Ауа райы",
+        "wind": "Жел",
+        "temp": "Температура",
+        "humidity": "Ылғалдылық",
+        "upwind_sources": "Жел жақтағы нысандар",
+        "possible_pollutants": "Ықтимал қосымша элементтер",
+        "ai_error": "ИИ ұсыныстарын алу мүмкін болмады.",
+        "updated": "Автоматты түрде жаңартылды",
+        "data_source": "Дереккөз",
+        "reminder": "⏰ **Ауа сапасын тексеріңіз!**\n\nСоңғы тексеруден 12 сағат өтті.\nЖаңа деректер алу үшін төмендегі түймені басыңыз."
+    },
+    "en": {
+        "welcome": "🌍 **AirAdvice**\n\nChoose language:",
+        "send_location": "📍 Send location",
+        "air_quality": "Air Quality",
+        "weather_title": "Weather",
+        "wind": "Wind",
+        "temp": "Temperature",
+        "humidity": "Humidity",
+        "upwind_sources": "Upwind sources",
+        "possible_pollutants": "Possible additional pollutants",
+        "ai_error": "Failed to get AI recommendations. Check API key.",
+        "updated": "Updated automatically",
+        "data_source": "Data source",
+        "reminder": "⏰ **Check air quality!**\n\n12 hours have passed since your last check.\nTap the button below to get fresh air quality data and health recommendations."
+    }
+}
+
+def get_text(user_id, key):
+    """Получаем текст на языке пользователя"""
+    lang = user_languages.get(user_id, "ru")
+    return TRANSLATIONS[lang].get(key, TRANSLATIONS["ru"][key])
+
 # ============ ШАГ 1: ГЕОПОЗИЦИЯ ============
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    """Приветствие и запрос геолокации"""
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
-    markup.add(types.KeyboardButton("📍 Отправить местоположение", request_location=True))
+    """Приветствие и выбор языка"""
+    user_id = message.from_user.id
+    user_languages[user_id] = "ru"
+    
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    markup.add(
+        types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru"),
+        types.InlineKeyboardButton("🇰🇿 Қазақша", callback_data="lang_kz"),
+        types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")
+    )
     
     bot.send_message(
         message.chat.id,
-        "🌍 **AirAdvice**\n\n"
-        "Я анализирую качество воздуха рядом с вами и даю персональные рекомендации.\n\n"
-        "Отправьте ваше местоположение:",
+        "🌍 **AirAdvice**\n\nВыберите язык / Тілді таңдаңыз / Choose language:",
+        reply_markup=markup,
+        parse_mode='Markdown'
+    )
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('lang_'))
+def handle_language(call):
+    """Обработка выбора языка"""
+    user_id = call.from_user.id
+    lang = call.data.split('_')[1]
+    user_languages[user_id] = lang
+    user_ids.add(user_id)
+    
+    bot.answer_callback_query(call.id)
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+    markup.add(types.KeyboardButton(get_text(user_id, "send_location"), request_location=True))
+    
+    bot.send_message(
+        call.message.chat.id,
+        get_text(user_id, "send_location"),
         reply_markup=markup,
         parse_mode='Markdown'
     )
@@ -33,6 +119,7 @@ def send_welcome(message):
 @bot.message_handler(content_types=['location'])
 def handle_location(message):
     """Обработка геолокации и запуск анализа"""
+    user_id = message.from_user.id
     lat = message.location.latitude
     lon = message.location.longitude
     
@@ -41,26 +128,26 @@ def handle_location(message):
     # ШАГ 2: Берем анализ качества воздуха
     air_data, source_name = get_best_air_data(lat, lon)
     
-    # ШАГ 3: Берем погоду
+    # ШАГ 3: Берем погоду (ветер, влажность)
     weather = get_weather(lat, lon)
     
     # ШАГ 4: Ищем объекты вокруг
     sources = get_nearby_sources(lat, lon)
     
-    # ШАГ 5: Анализ ветра
+    # ШАГ 5: Определяем, откуда дует ветер и какие объекты там находятся
     wind_analysis = analyze_wind_and_sources(weather, sources)
     
-    # ШАГ 6: Анализ загрязнения
+    # ШАГ 6: Делаем выводы о возможных загрязнителях
     pollution_analysis = analyze_pollution(air_data, wind_analysis)
     
-    # ШАГ 7: Рекомендации DeepSeek
+    # ШАГ 7: Запрашиваем рекомендации у DeepSeek
     recommendations = get_deepseek_recommendations(
         air_data, weather, wind_analysis, pollution_analysis
     )
     
-    # ШАГ 8: Формируем ответ
+    # ШАГ 8: Формируем полный ответ пользователю
     response = format_full_response(
-        air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name
+        air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, user_id
     )
     
     bot.send_message(message.chat.id, response, parse_mode='Markdown')
@@ -196,7 +283,6 @@ def get_nearby_sources(lat, lon):
             else:
                 continue
             
-            # Определяем тип
             if tags.get('landuse') == 'landfill':
                 src_type = 'landfill'
                 name = tags.get('name', 'Свалка')
@@ -206,9 +292,6 @@ def get_nearby_sources(lat, lon):
             elif tags.get('landuse') == 'industrial':
                 src_type = 'industrial'
                 name = tags.get('name', 'Промзона')
-            elif tags.get('man_made') == 'works':
-                src_type = 'chemical_plant'
-                name = tags.get('name', 'Завод')
             else:
                 continue
             
@@ -314,27 +397,21 @@ def analyze_pollution(air_data, wind_analysis):
     if o3 > 100:
         elevated.append('O₃')
     
-    # Сопутствующие элементы на основе повышенных загрязнителей
+    # Сопутствующие элементы
     possible_pollutants = []
     
-    # От повышенных загрязнителей
     if 'PM2.5' in elevated:
         possible_pollutants.extend(['Сажа', 'Пыль', 'Тяжёлые металлы'])
     if 'NO₂' in elevated:
         possible_pollutants.extend(['Бенз(а)пирен', 'Угарный газ'])
     if 'SO₂' in elevated:
         possible_pollutants.extend(['Сульфаты', 'Кислотные аэрозоли'])
-    if 'CO' in elevated:
-        possible_pollutants.extend(['Летучие органические соединения'])
     
-    # От объектов с наветренной стороны
     for src in wind_analysis.get('upwind_sources', []):
         if src['type'] == 'landfill':
             possible_pollutants.extend(['Метан', 'Сероводород', 'Аммиак'])
         elif src['type'] == 'power_plant':
             possible_pollutants.extend(['Зола', 'Диоксид серы', 'Оксиды азота'])
-        elif src['type'] == 'chemical_plant':
-            possible_pollutants.extend(['Фталаты', 'Винилхлорид', 'Микропластик'])
         elif src['type'] == 'industrial':
             possible_pollutants.extend(['Промышленная пыль', 'Летучие соединения'])
     
@@ -363,7 +440,6 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
         return None
     
     try:
-        # Формируем контекст
         context = f"""
 Ты — эксперт по экологии, токсикологии и нутрициологии.
 
@@ -436,10 +512,10 @@ def get_deepseek_recommendations(air_data, weather, wind_analysis, pollution_ana
 
 # ============ ШАГ 8: ФОРМИРОВАНИЕ ОТВЕТА ============
 
-def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name):
+def format_full_response(air_data, weather, wind_analysis, pollution_analysis, recommendations, source_name, user_id):
     """Формируем полный ответ пользователю"""
     
-    text = f"{pollution_analysis['emoji']} **Качество воздуха: {pollution_analysis['level']}**\n\n"
+    text = f"{pollution_analysis['emoji']} **{get_text(user_id, 'air_quality')}: {pollution_analysis['level']}**\n\n"
     
     # Показатели
     if air_data:
@@ -456,23 +532,23 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     
     # Погода
     if weather:
-        text += "💨 **Погода:**\n"
-        text += f"• Температура: {weather['temp']:.0f}°C\n"
-        text += f"• Влажность: {weather['humidity']}%\n"
-        text += f"• Ветер: {wind_analysis['wind_direction_text']}, {wind_analysis['wind_speed']} м/с\n\n"
+        text += f"💨 **{get_text(user_id, 'weather_title')}:**\n"
+        text += f"• {get_text(user_id, 'temp')}: {weather['temp']:.0f}°C\n"
+        text += f"• {get_text(user_id, 'humidity')}: {weather['humidity']}%\n"
+        text += f"• {get_text(user_id, 'wind')}: {wind_analysis['wind_direction_text']}, {wind_analysis['wind_speed']} м/с\n\n"
     else:
-        text += "💨 **Погода:** Нет данных\n\n"
+        text += f"💨 **{get_text(user_id, 'weather_title')}:** Нет данных\n\n"
     
     # Объекты с наветренной стороны
     if wind_analysis.get('upwind_sources'):
-        text += "🏭 **Объекты с наветренной стороны:**\n"
+        text += f"🏭 **{get_text(user_id, 'upwind_sources')}:**\n"
         for src in wind_analysis['upwind_sources']:
             text += f"• {src['name']}\n"
         text += "\n"
     
     # Сопутствующие элементы
     if pollution_analysis.get('possible_pollutants'):
-        text += "⚠️ **Возможные сопутствующие элементы:**\n"
+        text += f"⚠️ **{get_text(user_id, 'possible_pollutants')}:**\n"
         text += ", ".join(pollution_analysis['possible_pollutants'])
         text += "\n\n"
     
@@ -480,12 +556,41 @@ def format_full_response(air_data, weather, wind_analysis, pollution_analysis, r
     if recommendations:
         text += f"{recommendations}\n\n"
     else:
-        text += "⚠️ _Не удалось получить рекомендации ИИ. Проверьте API ключ._\n\n"
+        text += f"⚠️ _{get_text(user_id, 'ai_error')}_\n\n"
     
-    text += f"📡 Данные: {source_name or 'Unknown'}\n"
-    text += f"---\n_Обновлено автоматически_"
+    text += f"📡 {get_text(user_id, 'data_source')}: {source_name or 'Unknown'}\n"
+    text += f"---\n_{get_text(user_id, 'updated')}_"
     
     return text
+
+
+# ============ ФУНКЦИЯ НАПОМИНАНИЙ ============
+
+def send_reminders():
+    """Отправляем напоминание каждые 12 часов"""
+    while True:
+        # Ждем 12 часов (43200 секунд)
+        time.sleep(43200)
+        
+        for user_id in user_ids.copy():
+            try:
+                markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=1)
+                markup.add(types.KeyboardButton(
+                    get_text(user_id, "send_location"), 
+                    request_location=True
+                ))
+                
+                bot.send_message(
+                    user_id,
+                    get_text(user_id, "reminder"),
+                    reply_markup=markup,
+                    parse_mode='Markdown'
+                )
+            except Exception as e:
+                print(f"Reminder error for {user_id}: {e}")
+                # Если пользователь заблокировал бота — удаляем
+                if "Forbidden" in str(e):
+                    user_ids.discard(user_id)
 
 
 # ============ ЗАПУСК ============
@@ -495,4 +600,11 @@ if __name__ == "__main__":
         exit(1)
     
     print("✅ Бот запущен...")
+    
+    # Запускаем поток с напоминаниями
+    reminder_thread = threading.Thread(target=send_reminders, daemon=True)
+    reminder_thread.start()
+    print("⏰ Напоминания запущены (каждые 12 часов)")
+    
+    # Запускаем бота
     bot.polling(none_stop=True)
