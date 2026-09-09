@@ -446,13 +446,50 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
     return msg
 
 def safe_send_message(chat_id, text):
+    """Отправка с автоматическим разбиением длинных сообщений"""
+    max_length = 4000
+    
     try:
-        bot.send_message(chat_id, text, parse_mode='Markdown')
-    except:
-        try:
-            bot.send_message(chat_id, text)
-        except Exception as e:
-            logging.error(f"Send error: {e}")
+        if len(text) <= max_length:
+            try:
+                bot.send_message(chat_id, text, parse_mode='Markdown')
+            except:
+                bot.send_message(chat_id, text)
+            return
+        
+        print(f"📤 Разбиваю длинное сообщение ({len(text)} символов)...", flush=True)
+        
+        # Разбиваем по строкам
+        parts = []
+        current = ""
+        
+        for line in text.split('\n'):
+            if len(current) + len(line) + 1 > max_length:
+                if current:
+                    parts.append(current)
+                current = line
+            else:
+                current = (current + '\n' + line) if current else line
+        
+        if current:
+            parts.append(current)
+        
+        # Отправляем части
+        for i, part in enumerate(parts):
+            if len(parts) > 1:
+                part += f"\n\n📄 Часть {i+1}/{len(parts)}"
+            
+            try:
+                bot.send_message(chat_id, part, parse_mode='Markdown')
+            except:
+                bot.send_message(chat_id, part)
+            
+            time.sleep(0.5)
+        
+        print(f"✅ Отправлено {len(parts)} частей", flush=True)
+        
+    except Exception as e:
+        logging.error(f"Send error: {e}")
 
 # ==========================================
 # 10. ОБРАБОТЧИКИ
