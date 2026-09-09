@@ -260,105 +260,75 @@ def analyze_pollution(air_data, lang='ru'):
 # ==========================================
 
 def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru'):
+    """Короткий анализ источников через DeepSeek"""
     if not DEEPSEEK_API_KEY:
-        print("❌ DEEPSEEK_API_KEY не установлен для анализа", flush=True)
         return None
     
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
+    # Получаем данные кратко
     aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
     pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
-    pm10 = air_data.get('pm10', 'N/A') if air_data else 'N/A'
     so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
     no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
-    co = air_data.get('co', 'N/A') if air_data else 'N/A'
     
     prompt = (
-        f"Ты эксперт по экологии. Проанализируй данные о воздухе.\n\n"
-        f"Координаты: {lat}, {lon}\n"
-        f"Ветер: {wind_dir_text} ({wind_deg} градусов)\n\n"
-        f"Показатели:\n"
-        f"AQI: {aqi}\n"
-        f"PM2.5: {pm25} µg/m3\n"
-        f"PM10: {pm10} µg/m3\n"
-        f"SO2: {so2} µg/m3\n"
-        f"NO2: {no2} µg/m3\n"
-        f"CO: {co} µg/m3\n\n"
-        f"Определи вероятные источники загрязнения.\n"
-        f"Учитывай направление ветра и комбинации загрязнителей.\n\n"
-        f"Формат ответа:\n"
-        f"🏭 Вероятные источники:\n"
-        f"• [источник] — [почему]\n\n"
-        f"⚠️ Сопутствующие элементы:\n"
-        f"• [элемент] — [опасность]\n\n"
-        f"Отвечай на языке: {lang_name}"
+        f"Ты эксперт по экологии. ОТВЕЧАЙ КОРОТКО (2-3 предложения).\n\n"
+        f"Данные: AQI={aqi}, PM2.5={pm25}, SO2={so2}, NO2={no2}\n"
+        f"Ветер: {wind_dir_text}\n"
+        f"Координаты: {lat}, {lon}\n\n"
+        f"ФОРМАТ (строго):\n"
+        f"🏭 Источники: [1-2 вероятных источника]\n"
+        f"⚠️ Элементы: [2-3 элемента]\n\n"
+        f"Язык: {lang_name}"
     )
     
-    system_prompt = f"Ты эксперт по экологии. Отвечай на {lang_name}."
+    system_prompt = f"Отвечай кратко, без лишних слов. Язык: {lang_name}"
     
-    print("🏭 Анализ источников через DeepSeek...", flush=True)
-    return call_deepseek(prompt, system_prompt, max_tokens=600, temperature=0.3)
+    print("🏭 Короткий анализ источников...", flush=True)
+    return call_deepseek(prompt, system_prompt, max_tokens=200, temperature=0.3)
 
 # ==========================================
 # 8. DEEPSEEK РЕКОМЕНДАЦИИ
 # ==========================================
 
-def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru'):
+def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', source_analysis=None):
+    """Рекомендации на основе анализа источников"""
     if not DEEPSEEK_API_KEY:
-        print("❌ DEEPSEEK_API_KEY не установлен для рекомендаций", flush=True)
         return get_rule_based_recommendations(pollution_analysis, lang)
     
     wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'N/A'
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
+    # Краткие данные
     aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
     pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
-    pm10 = air_data.get('pm10', 'N/A') if air_data else 'N/A'
-    so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
-    no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
     temp = weather.get('temp', 'N/A') if weather else 'N/A'
-    humidity = weather.get('humidity', 'N/A') if weather else 'N/A'
     
-    prompt = f"""Ты эксперт по экологии и здоровью.
-
-ДАННЫЕ О ВОЗДУХЕ:
-- AQI: {aqi}
-- PM2.5: {pm25} µg/m3
-- PM10: {pm10} µg/m3
-- SO2: {so2} µg/m3
-- NO2: {no2} µg/m3
-- Статус: {pollution_analysis.get('level_str', 'Неизвестно')}
-
-ПОГОДА:
-- Температура: {temp}°C
-- Влажность: {humidity}%
-- Ветер: {wind_dir}
-
-Дай КОНКРЕТНЫЕ рекомендации:
-
-1. 🏃‍♂️ ФИЗИЧЕСКАЯ АКТИВНОСТЬ
-- Можно ли гулять/бегать?
-- Как долго?
-- Какая интенсивность?
-
-2. 🥗 ПИТАНИЕ (5-7 продуктов)
-- Название продукта
-- Почему полезен именно при таком воздухе?
-
-3. 💧 ПИТЬЕВОЙ РЕЖИМ
-- Сколько воды пить?
-- Что добавить (лимон, имбирь)?
-
-4. 💊 ВИТАМИНЫ И ДОБАВКИ
-- Какие именно?
-- Дозировка?
-
-Отвечай на {lang_name}. Будь конкретным."""
+    # Базовый промпт
+    prompt = (
+        f"Ты эксперт по здоровью. ОТВЕЧАЙ КОРОТКО.\n\n"
+        f"Воздух: AQI={aqi}, PM2.5={pm25}, Температура={temp}°C\n"
+        f"Ветер: {wind_dir}\n"
+    )
     
-    system_prompt = f"Ты эксперт по здоровью. Отвечай на {lang_name}."
+    # Добавляем анализ источников если есть
+    if source_analysis:
+        prompt += f"\nАнализ источников:\n{source_analysis}\n"
     
-    print("🤖 Запрос рекомендаций через DeepSeek...", flush=True)
-    result = call_deepseek(prompt, system_prompt, max_tokens=800, temperature=0.4)
+    prompt += (
+        f"\nДай КОРОТКИЕ рекомендации:\n"
+        f"1. 🏃‍♂️ Активность: [1 предложение]\n"
+        f"2. 🥗 Питание: [3-4 продукта]\n"
+        f"3. 💧 Вода: [1 предложение]\n"
+        f"4. 💊 Витамины: [2-3 штуки]\n\n"
+        f"Без лишних объяснений. Язык: {lang_name}"
+    )
+    
+    system_prompt = f"Отвечай кратко, по делу. Язык: {lang_name}"
+    
+    print("🤖 Короткие рекомендации...", flush=True)
+    result = call_deepseek(prompt, system_prompt, max_tokens=300, temperature=0.4)
     
     if result:
         return result
@@ -446,8 +416,29 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
     return msg
 
 def safe_send_message(chat_id, text):
-    """Отправка с автоматическим разбиением длинных сообщений"""
+    """Отправка с кнопками"""
     max_length = 4000
+    
+    # Создаем клавиатуру с кнопками
+    lang = user_languages.get(str(chat_id), 'ru')
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    
+    location_text = {
+        'ru': "📍 Новая локация",
+        'kk': "📍 Жаңа орын",
+        'en': "📍 New location"
+    }.get(lang, "📍 New location")
+    
+    refresh_text = {
+        'ru': "🔄 Обновить",
+        'kk': "🔄 Жаңарту",
+        'en': "🔄 Refresh"
+    }.get(lang, "🔄 Refresh")
+    
+    markup.add(types.KeyboardButton(location_text, request_location=True))
+    markup.add(types.KeyboardButton(refresh_text))
+    
+    # Остальной код отправки...
     
     try:
         if len(text) <= max_length:
@@ -521,20 +512,99 @@ def set_language(message):
     save_user_languages()
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn_text = {
+    
+    # Кнопка локации
+    location_text = {
         'ru': "📍 Отправить локацию",
         'kk': "📍 Орынды жіберу",
         'en': "📍 Send Location"
     }.get(lang, "📍 Send Location")
-    markup.add(types.KeyboardButton(btn_text, request_location=True))
+    markup.add(types.KeyboardButton(location_text, request_location=True))
+    
+    # Кнопка Старт
+    start_text = {
+        'ru': "🚀 Старт",
+        'kk': "🚀 Бастау",
+        'en': "🚀 Start"
+    }.get(lang, "🚀 Start")
+    markup.add(types.KeyboardButton(start_text))
     
     confirm = {
-        'ru': "Язык сохранен! Отправьте вашу геолокацию.",
-        'kk': "Тіл сақталды! Геолокацияңызды жіберіңіз.",
-        'en': "Language saved! Send your location."
+        'ru': "Язык сохранен! Выберите действие:",
+        'kk': "Тіл сақталды! Әрекетті таңдаңыз:",
+        'en': "Language saved! Choose action:"
     }.get(lang, "Language saved!")
     
     bot.send_message(message.chat.id, confirm, reply_markup=markup)
+    
+@bot.message_handler(func=lambda m: m.text in ['🚀 Старт', '🚀 Бастау', '🚀 Start'])
+def start_button(message):
+    """Обработка кнопки Старт"""
+    user_id = str(message.chat.id)
+    lang = user_languages.get(user_id, 'ru')
+    
+    bot.send_chat_action(message.chat.id, 'typing')
+    
+    welcome_text = {
+        'ru': (
+            "👋 Добро пожаловать!\n\n"
+            "Я помогу узнать качество воздуха в вашем районе.\n\n"
+            "📊 Что я умею:\n"
+            "• Показывать AQI и загрязнители\n"
+            "• Определять источники загрязнения\n"
+            "• Давать рекомендации по здоровью\n\n"
+            "📍 Отправьте вашу геолокацию, чтобы начать!"
+        ),
+        'kk': (
+            "👋 Қош келдіңіз!\n\n"
+            "Мен сіздің аймағыңыздағы ауа сапасын білуге көмектесемін.\n\n"
+            "📊 Не істей аламын:\n"
+            "• AQI және ластаушыларды көрсету\n"
+            "• Ластану көздерін анықтау\n"
+            "• Денсаулық бойынша ұсыныстар беру\n\n"
+            "📍 Бастау үшін геолокацияңызды жіберіңіз!"
+        ),
+        'en': (
+            "👋 Welcome!\n\n"
+            "I'll help you check air quality in your area.\n\n"
+            "📊 What I can do:\n"
+            "• Show AQI and pollutants\n"
+            "• Identify pollution sources\n"
+            "• Give health recommendations\n\n"
+            "📍 Send your location to start!"
+        )
+    }.get(lang, "Welcome!")
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    location_text = {
+        'ru': "📍 Отправить локацию",
+        'kk': "📍 Орынды жіберу",
+        'en': "📍 Send Location"
+    }.get(lang, "📍 Send Location")
+    markup.add(types.KeyboardButton(location_text, request_location=True))
+    
+    bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+@bot.message_handler(func=lambda m: m.text in ['🔄 Обновить', '🔄 Жаңарту', '🔄 Refresh'])
+def refresh_data(message):
+    """Обновление данных"""
+    user_id = str(message.chat.id)
+    lang = user_languages.get(user_id, 'ru')
+    
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    location_text = {
+        'ru': "📍 Отправить локацию",
+        'kk': "📍 Орынды жіберу",
+        'en': "📍 Send Location"
+    }.get(lang, "📍 Send Location")
+    markup.add(types.KeyboardButton(location_text, request_location=True))
+    
+    msg = {
+        'ru': "Отправьте новую локацию для обновления данных.",
+        'kk': "Деректерді жаңарту үшін жаңа геолокация жіберіңіз.",
+        'en': "Send new location to update data."
+    }.get(lang, "Send location")
+    
+    bot.send_message(message.chat.id, msg, reply_markup=markup)
 
 @bot.message_handler(content_types=['location'])
 def handle_location(message):
@@ -561,11 +631,18 @@ def handle_location(message):
     wind_deg = weather.get('wind_deg', 0) if weather else 0
     wind_dir_text = get_wind_direction_text(wind_deg, lang)
     
+    # ИЗМЕНЕНИЕ 1: Получаем короткий анализ источников
     ai_source_analysis = get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang)
-    pollution_analysis = analyze_pollution(air_data, lang)
-    recommendations = get_ai_recommendations(air_data, weather, pollution_analysis, lang)
     
-    response = format_full_response(air_data, weather, pollution_analysis, recommendations, source_name, lang, ai_source_analysis)
+    pollution_analysis = analyze_pollution(air_data, lang)
+    
+    # ИЗМЕНЕНИЕ 2: Передаем анализ источников в рекомендации
+    recommendations = get_ai_recommendations(air_data, weather, pollution_analysis, lang, ai_source_analysis)
+    
+    response = format_full_response(
+        air_data, weather, pollution_analysis,
+        recommendations, source_name, lang, ai_source_analysis
+    )
     
     safe_send_message(message.chat.id, response)
 
