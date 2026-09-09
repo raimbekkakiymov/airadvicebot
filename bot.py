@@ -268,25 +268,104 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
+    # Получаем все данные
+    aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
+    pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
+    pm10 = air_data.get('pm10', 'N/A') if air_data else 'N/A'
+    so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
+    no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
+    co = air_data.get('co', 'N/A') if air_data else 'N/A'
+    o3 = air_data.get('o3', 'N/A') if air_data else 'N/A'
+    
+    # Анализируем комбинации загрязнителей
+    indicators = []
+    
+    if isinstance(no2, (int, float)):
+        if no2 > 80:
+            indicators.append(f"NO2={no2} µg/m3 — ОЧЕНЬ ВЫСОКИЙ. Вероятно: интенсивный трафик или промышленность")
+        elif no2 > 40:
+            indicators.append(f"NO2={no2} µg/m3 — ПОВЫШЕН. Вероятно: автотранспорт или сжигание")
+        elif no2 > 20:
+            indicators.append(f"NO2={no2} µg/m3 — УМЕРЕННЫЙ. Фоновый уровень")
+    
+    if isinstance(co, (int, float)):
+        if co > 1000:
+            indicators.append(f"CO={co} µg/m3 — ВЫСОКИЙ. Вероятно: неполное сгорание, пожары, старые двигатели")
+        elif co > 500:
+            indicators.append(f"CO={co} µg/m3 — ПОВЫШЕН. Вероятно: трафик или отопление")
+    
+    if isinstance(so2, (int, float)):
+        if so2 > 50:
+            indicators.append(f"SO2={so2} µg/m3 — ВЫСОКИЙ. Вероятно: ТЭЦ, НПЗ, сжигание угля/мазута")
+        elif so2 > 20:
+            indicators.append(f"SO2={so2} µg/m3 — ПОВЫШЕН. Вероятно: промышленность")
+    
+    combos = []
+    
+    if isinstance(no2, (int, float)) and isinstance(co, (int, float)):
+        if no2 > 40 and co > 500:
+            combos.append("NO2 + CO повышены — вероятен интенсивный трафик (пробки)")
+        elif no2 > 40 and co < 500:
+            combos.append("NO2 повышен, CO норма — вероятны дизельные двигатели или промышленные печи")
+    
+    if isinstance(so2, (int, float)) and isinstance(pm25, (int, float)):
+        if so2 > 20 and pm25 > 25:
+            combos.append("SO2 + PM2.5 повышены — вероятно сжигание угля или мазута (ТЭЦ, котельные)")
+    
+    if isinstance(no2, (int, float)) and isinstance(o3, (int, float)):
+        if no2 > 20 and o3 and o3 > 100:
+            combos.append("NO2 + O3 повышены — фотохимический смог, жаркая погода")
+    
     prompt = (
-        f"Ты эксперт по экологии. "
-        f"Координаты: {lat}, {lon}. "
-        f"Ветер: {wind_dir_text} ({wind_deg} градусов). "
-        f"AQI: {air_data.get('aqi', 'N/A') if air_data else 'N/A'}. "
-        f"PM2.5: {air_data.get('pm25', 'N/A') if air_data else 'N/A'}. "
-        f"SO2: {air_data.get('so2', 'N/A') if air_data else 'N/A'}. "
-        f"NO2: {air_data.get('no2', 'N/A') if air_data else 'N/A'}. "
-        f"Определи вероятные источники загрязнения поблизости. "
-        f"Формат ответа: "
-        f"🏭 Вероятные источники: [список] "
-        f"⚠️ Сопутствующие элементы: [список] "
+        f"Ты эксперт по экологии и промышленной безопасности.\n"
+        f"Проанализируй КОМПЛЕКСНО все данные о воздухе.\n\n"
+        f"📍 КООРДИНАТЫ: {lat}, {lon}\n"
+        f"💨 ВЕТЕР: {wind_dir_text} ({wind_deg}°)\n\n"
+        f"📊 ПОЛНЫЕ ДАННЫЕ:\n"
+        f"AQI: {aqi}\n"
+        f"PM2.5: {pm25} µg/m3\n"
+        f"PM10: {pm10} µg/m3\n"
+        f"SO2: {so2} µg/m3\n"
+        f"NO2: {no2} µg/m3\n"
+        f"CO: {co} µg/m3\n"
+        f"O3: {o3} µg/m3\n\n"
+    )
+    
+    if indicators:
+        prompt += f"🔍 АНАЛИЗ ЗАГРЯЗНИТЕЛЕЙ:\n" + "\n".join(indicators) + "\n\n"
+    
+    if combos:
+        prompt += f"⚠️ КОМБИНАЦИИ (важные):\n" + "\n".join(combos) + "\n\n"
+    
+    prompt += (
+        f"🎯 ЗАДАЧА:\n"
+        f"1. Определи НАИБОЛЕЕ ВЕРОЯТНЫЙ источник загрязнения\n"
+        f"2. Учитывай направление ветра ({wind_dir_text})\n"
+        f"3. Сопоставь все показатели между собой\n"
+        f"4. NO2 — индикатор высоких температур (огонь, двигатели)\n"
+        f"5. CO — индикатор неполного сгорания\n"
+        f"6. SO2 — индикатор сжигания угля/мазута\n"
+        f"7. PM2.5/PM10 — индикатор пыли, стройки, сжигания\n\n"
+        f"ФОРМАТ ОТВЕТА (строго):\n"
+        f"🏭 Вероятные источники:\n"
+        f"• [источник] — [почему, какие показатели указывают]\n\n"
+        f"⚠️ Сопутствующие элементы:\n"
+        f"• [элемент] — [опасность для здоровья]\n\n"
+        f"🛡 Рекомендация по защите:\n"
+        f"• [конкретный совет]\n\n"
         f"Отвечай на языке: {lang_name}"
     )
     
-    system_prompt = f"Отвечай только на языке: {lang_name}"
+    system_prompt = (
+        f"Ты эксперт по экологии. "
+        f"Анализируй данные комплексно. "
+        f"Сопоставляй показатели между собой. "
+        f"Учитывай розу ветров. "
+        f"Язык: {lang_name}"
+    )
     
-    print(f"🏭 Анализ источников на языке: {lang_name}", flush=True)
-    return call_openrouter(prompt, system_prompt, max_tokens=500, temperature=0.5)
+    print(f"🏭 Комплексный анализ источников...", flush=True)
+    return call_openrouter(prompt, system_prompt, max_tokens=600, temperature=0.3)
 
 # ==========================================
 # 8. OPENROUTER РЕКОМЕНДАЦИИ
@@ -300,28 +379,97 @@ def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru'):
     wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'N/A'
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
+    # Получаем данные
+    aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
+    pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
+    pm10 = air_data.get('pm10', 'N/A') if air_data else 'N/A'
+    so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
+    no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
+    co = air_data.get('co', 'N/A') if air_data else 'N/A'
+    o3 = air_data.get('o3', 'N/A') if air_data else 'N/A'
+    temp = weather.get('temp', 'N/A') if weather else 'N/A'
+    humidity = weather.get('humidity', 'N/A') if weather else 'N/A'
+    
+    risk_level = pollution_analysis.get('level_code', 1)
+    
+    # Определяем тип загрязнения
+    pollution_type = "смешанное"
+    if isinstance(no2, (int, float)) and no2 > 40 and isinstance(co, (int, float)) and co > 500:
+        pollution_type = "транспортное (трафик)"
+    elif isinstance(so2, (int, float)) and so2 > 20:
+        pollution_type = "промышленное (сжигание топлива)"
+    elif isinstance(pm25, (int, float)) and pm25 > 25 and isinstance(no2, (int, float)) and no2 < 20:
+        pollution_type = "пылевое (стройка, дороги)"
+    elif isinstance(o3, (int, float)) and o3 and o3 > 100:
+        pollution_type = "фотохимическое (смог)"
+    
     prompt = (
-        f"Ты эксперт по экологии и здоровью. "
-        f"AQI: {air_data.get('aqi', 'N/A') if air_data else 'N/A'}. "
-        f"PM2.5: {air_data.get('pm25', 'N/A') if air_data else 'N/A'}. "
-        f"PM10: {air_data.get('pm10', 'N/A') if air_data else 'N/A'}. "
-        f"Температура: {weather.get('temp', 'N/A') if weather else 'N/A'} C. "
-        f"Влажность: {weather.get('humidity', 'N/A') if weather else 'N/A'}%. "
-        f"Ветер: {wind_dir}. "
-        f"Статус: {pollution_analysis.get('level_str', 'Неизвестно')}. "
-        f"Дай рекомендации: "
-        f"1) Физическая активность "
-        f"2) Питание (5-7 продуктов) "
-        f"3) Питьевой режим "
-        f"4) Витамины и добавки. "
-        f"Формат: кратко, с эмодзи. "
+        f"Ты эксперт по экологии, токсикологии и нутрициологии.\n"
+        f"Дай рекомендации на основе КОНКРЕТНЫХ данных.\n\n"
+        f"📊 ДАННЫЕ О ВОЗДУХЕ:\n"
+        f"AQI: {aqi}\n"
+        f"PM2.5: {pm25} µg/m3\n"
+        f"PM10: {pm10} µg/m3\n"
+        f"SO2: {so2} µg/m3\n"
+        f"NO2: {no2} µg/m3\n"
+        f"CO: {co} µg/m3\n"
+        f"O3: {o3} µg/m3\n\n"
+        f"🌤 ПОГОДА:\n"
+        f"Температура: {temp}°C\n"
+        f"Влажность: {humidity}%\n"
+        f"Ветер: {wind_dir}\n\n"
+        f"🏭 ТИП ЗАГРЯЗНЕНИЯ: {pollution_type}\n"
+        f"⚠️ УРОВЕНЬ РИСКА: {risk_level}/5\n\n"
+        f"Дай рекомендации С УЧЕТОМ ТИПА ЗАГРЯЗНЕНИЯ:\n\n"
+    )
+    
+    if pollution_type == "транспортное (трафик)":
+        prompt += (
+            f"ОСОБЕННОСТИ: NO2 и CO от выхлопных газов\n"
+            f"1. 🏃‍♂️ Активность: избегать улиц с трафиком\n"
+            f"2. 🥗 Питание: продукты с витамином C и E (защита от оксидантов)\n"
+            f"3. 💧 Вода: 2-2.5 литра (выведение токсинов)\n"
+            f"4. 💊 Витамины: C, E, Омега-3, Селен\n"
+        )
+    elif pollution_type == "промышленное (сжигание топлива)":
+        prompt += (
+            f"ОСОБЕННОСТИ: SO2 от сжигания топлива\n"
+            f"1. 🏃‍♂️ Активность: ограничить, SO2 раздражает дыхательные пути\n"
+            f"2. 🥗 Питание: молочные продукты (связывают SO2), антиоксиданты\n"
+            f"3. 💧 Вода: 2.5-3 литра (ускоренное выведение)\n"
+            f"4. 💊 Витамины: C (1000мг), E, Цинк, N-ацетилцистеин\n"
+        )
+    elif pollution_type == "пылевое (стройка, дороги)":
+        prompt += (
+            f"ОСОБЕННОСТИ: PM2.5/PM10 — мелкие частицы\n"
+            f"1. 🏃‍♂️ Активность: избегать ветреных мест, стройплощадок\n"
+            f"2. 🥗 Питание: продукты с клетчаткой (выведение частиц)\n"
+            f"3. 💧 Вода: 2-2.5 литра\n"
+            f"4. 💊 Витамины: C, E, Бета-каротин\n"
+        )
+    else:
+        prompt += (
+            f"ОСОБЕННОСТИ: комплексное загрязнение\n"
+            f"1. 🏃‍♂️ Активность: по уровню AQI\n"
+            f"2. 🥗 Питание: максимально антиоксидантное\n"
+            f"3. 💧 Вода: 2-3 литра\n"
+            f"4. 💊 Витамины: C, E, Омега-3, Цинк, Селен\n"
+        )
+    
+    prompt += (
+        f"\nФОРМАТ: Кратко, конкретно, с эмодзи.\n"
+        f"Учитывай тип загрязнения при рекомендациях.\n"
         f"Отвечай на языке: {lang_name}"
     )
     
-    system_prompt = f"Отвечай только на языке: {lang_name}"
+    system_prompt = (
+        f"Ты эксперт по здоровью. "
+        f"Рекомендации должны соответствовать типу загрязнения. "
+        f"Язык: {lang_name}"
+    )
     
-    print(f"🤖 Запрос рекомендаций на языке: {lang_name}", flush=True)
-    result = call_openrouter(prompt, system_prompt, max_tokens=1000, temperature=0.7)
+    print(f"🤖 Рекомендации (тип: {pollution_type}, риск: {risk_level}/5)", flush=True)
+    result = call_openrouter(prompt, system_prompt, max_tokens=800, temperature=0.4)
     
     if result:
         return result
