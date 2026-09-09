@@ -544,9 +544,10 @@ if __name__ == '__main__':
         print("❌ Установите BOT_TOKEN!", flush=True)
         sys.exit(1)
     
-    # Очистка старых процессов
+    # Очистка старых процессов (безопасно)
     print("🔄 Очистка старых процессов...", flush=True)
-    os.system("pkill -f 'bot.py' 2>/dev/null || true")
+    current_pid = os.getpid()
+    os.system(f"ps aux | grep 'bot.py' | grep -v grep | grep -v {current_pid} | awk '{{print $2}}' | xargs -r kill -9 2>/dev/null || true")
     time.sleep(3)
     
     # Удаляем webhook
