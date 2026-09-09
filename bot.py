@@ -36,7 +36,7 @@ def start_health_check_server():
 def keep_alive():
     """Поддерживаем сервис активным"""
     while True:
-        time.sleep(240)  # Каждые 4 минуты
+        time.sleep(240)
         try:
             print(f"✅ Бот активен: {datetime.now()}", flush=True)
         except:
@@ -48,12 +48,12 @@ def keep_alive():
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 WAQI_API_KEY = os.getenv("WAQI_API_KEY") or "demo"
 
-# Настройки OpenRouter
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+# Настройки DeepSeek
+DEEPSEEK_MODEL = "deepseek-chat"
+DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
 PID_FILE = "bot.pid"
 USER_LANG_FILE = "user_languages.json"
@@ -87,21 +87,19 @@ def save_user_languages():
         logging.error(f"Ошибка сохранения: {e}")
 
 # ==========================================
-# 3. OPENROUTER API
+# 3. DEEPSEEK API
 # ==========================================
 
-def call_openrouter(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
-    """Универсальная функция для вызова OpenRouter API"""
-    if not OPENROUTER_API_KEY:
-        print("❌ OPENROUTER_API_KEY не установлен", flush=True)
+def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
+    """Универсальная функция для вызова DeepSeek API"""
+    if not DEEPSEEK_API_KEY:
+        print("❌ DEEPSEEK_API_KEY не установлен", flush=True)
         return None
     
     try:
         headers = {
-            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://render.com",
-            "X-Title": "AirQualityBot"
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
         }
         
         messages = []
@@ -110,26 +108,26 @@ def call_openrouter(prompt, system_prompt=None, max_tokens=1000, temperature=0.7
         messages.append({"role": "user", "content": prompt})
         
         body = {
-            "model": OPENROUTER_MODEL,
+            "model": DEEPSEEK_MODEL,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens
         }
         
-        print(f"🤖 Запрос к OpenRouter...", flush=True)
-        r = requests.post(OPENROUTER_URL, headers=headers, json=body, timeout=30)
+        print(f"🤖 Запрос к DeepSeek...", flush=True)
+        r = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=30)
         
         if r.status_code == 200:
             data = r.json()
             if 'choices' in data and data['choices']:
                 result = data['choices'][0]['message']['content']
-                print("✅ OpenRouter ответил", flush=True)
+                print("✅ DeepSeek ответил", flush=True)
                 return result
         else:
-            print(f"❌ OpenRouter error {r.status_code}", flush=True)
+            print(f"❌ DeepSeek error {r.status_code}: {r.text}", flush=True)
     
     except Exception as e:
-        print(f"❌ OpenRouter exception: {e}", flush=True)
+        print(f"❌ DeepSeek exception: {e}", flush=True)
     
     return None
 
@@ -258,218 +256,109 @@ def analyze_pollution(air_data, lang='ru'):
     return {'level_str': t[1], 'level_code': 1}
 
 # ==========================================
-# 7. OPENROUTER АНАЛИЗ
+# 7. DEEPSEEK АНАЛИЗ ИСТОЧНИКОВ
 # ==========================================
 
 def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru'):
-    if not OPENROUTER_API_KEY:
-        print("❌ OPENROUTER_API_KEY не установлен для анализа", flush=True)
+    if not DEEPSEEK_API_KEY:
+        print("❌ DEEPSEEK_API_KEY не установлен для анализа", flush=True)
         return None
     
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
-    # Получаем все данные
     aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
     pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
     pm10 = air_data.get('pm10', 'N/A') if air_data else 'N/A'
     so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
     no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
     co = air_data.get('co', 'N/A') if air_data else 'N/A'
-    o3 = air_data.get('o3', 'N/A') if air_data else 'N/A'
-    
-    # Анализируем комбинации загрязнителей
-    indicators = []
-    
-    if isinstance(no2, (int, float)):
-        if no2 > 80:
-            indicators.append(f"NO2={no2} µg/m3 — ОЧЕНЬ ВЫСОКИЙ. Вероятно: интенсивный трафик или промышленность")
-        elif no2 > 40:
-            indicators.append(f"NO2={no2} µg/m3 — ПОВЫШЕН. Вероятно: автотранспорт или сжигание")
-        elif no2 > 20:
-            indicators.append(f"NO2={no2} µg/m3 — УМЕРЕННЫЙ. Фоновый уровень")
-    
-    if isinstance(co, (int, float)):
-        if co > 1000:
-            indicators.append(f"CO={co} µg/m3 — ВЫСОКИЙ. Вероятно: неполное сгорание, пожары, старые двигатели")
-        elif co > 500:
-            indicators.append(f"CO={co} µg/m3 — ПОВЫШЕН. Вероятно: трафик или отопление")
-    
-    if isinstance(so2, (int, float)):
-        if so2 > 50:
-            indicators.append(f"SO2={so2} µg/m3 — ВЫСОКИЙ. Вероятно: ТЭЦ, НПЗ, сжигание угля/мазута")
-        elif so2 > 20:
-            indicators.append(f"SO2={so2} µg/m3 — ПОВЫШЕН. Вероятно: промышленность")
-    
-    combos = []
-    
-    if isinstance(no2, (int, float)) and isinstance(co, (int, float)):
-        if no2 > 40 and co > 500:
-            combos.append("NO2 + CO повышены — вероятен интенсивный трафик (пробки)")
-        elif no2 > 40 and co < 500:
-            combos.append("NO2 повышен, CO норма — вероятны дизельные двигатели или промышленные печи")
-    
-    if isinstance(so2, (int, float)) and isinstance(pm25, (int, float)):
-        if so2 > 20 and pm25 > 25:
-            combos.append("SO2 + PM2.5 повышены — вероятно сжигание угля или мазута (ТЭЦ, котельные)")
-    
-    if isinstance(no2, (int, float)) and isinstance(o3, (int, float)):
-        if no2 > 20 and o3 and o3 > 100:
-            combos.append("NO2 + O3 повышены — фотохимический смог, жаркая погода")
     
     prompt = (
-        f"Ты эксперт по экологии и промышленной безопасности.\n"
-        f"Проанализируй КОМПЛЕКСНО все данные о воздухе.\n\n"
-        f"📍 КООРДИНАТЫ: {lat}, {lon}\n"
-        f"💨 ВЕТЕР: {wind_dir_text} ({wind_deg}°)\n\n"
-        f"📊 ПОЛНЫЕ ДАННЫЕ:\n"
+        f"Ты эксперт по экологии. Проанализируй данные о воздухе.\n\n"
+        f"Координаты: {lat}, {lon}\n"
+        f"Ветер: {wind_dir_text} ({wind_deg} градусов)\n\n"
+        f"Показатели:\n"
         f"AQI: {aqi}\n"
         f"PM2.5: {pm25} µg/m3\n"
         f"PM10: {pm10} µg/m3\n"
         f"SO2: {so2} µg/m3\n"
         f"NO2: {no2} µg/m3\n"
-        f"CO: {co} µg/m3\n"
-        f"O3: {o3} µg/m3\n\n"
-    )
-    
-    if indicators:
-        prompt += f"🔍 АНАЛИЗ ЗАГРЯЗНИТЕЛЕЙ:\n" + "\n".join(indicators) + "\n\n"
-    
-    if combos:
-        prompt += f"⚠️ КОМБИНАЦИИ (важные):\n" + "\n".join(combos) + "\n\n"
-    
-    prompt += (
-        f"🎯 ЗАДАЧА:\n"
-        f"1. Определи НАИБОЛЕЕ ВЕРОЯТНЫЙ источник загрязнения\n"
-        f"2. Учитывай направление ветра ({wind_dir_text})\n"
-        f"3. Сопоставь все показатели между собой\n"
-        f"4. NO2 — индикатор высоких температур (огонь, двигатели)\n"
-        f"5. CO — индикатор неполного сгорания\n"
-        f"6. SO2 — индикатор сжигания угля/мазута\n"
-        f"7. PM2.5/PM10 — индикатор пыли, стройки, сжигания\n\n"
-        f"ФОРМАТ ОТВЕТА (строго):\n"
+        f"CO: {co} µg/m3\n\n"
+        f"Определи вероятные источники загрязнения.\n"
+        f"Учитывай направление ветра и комбинации загрязнителей.\n\n"
+        f"Формат ответа:\n"
         f"🏭 Вероятные источники:\n"
-        f"• [источник] — [почему, какие показатели указывают]\n\n"
+        f"• [источник] — [почему]\n\n"
         f"⚠️ Сопутствующие элементы:\n"
-        f"• [элемент] — [опасность для здоровья]\n\n"
-        f"🛡 Рекомендация по защите:\n"
-        f"• [конкретный совет]\n\n"
+        f"• [элемент] — [опасность]\n\n"
         f"Отвечай на языке: {lang_name}"
     )
     
-    system_prompt = (
-        f"Ты эксперт по экологии. "
-        f"Анализируй данные комплексно. "
-        f"Сопоставляй показатели между собой. "
-        f"Учитывай розу ветров. "
-        f"Язык: {lang_name}"
-    )
+    system_prompt = f"Ты эксперт по экологии. Отвечай на {lang_name}."
     
-    print(f"🏭 Комплексный анализ источников...", flush=True)
-    return call_openrouter(prompt, system_prompt, max_tokens=600, temperature=0.3)
+    print("🏭 Анализ источников через DeepSeek...", flush=True)
+    return call_deepseek(prompt, system_prompt, max_tokens=600, temperature=0.3)
 
 # ==========================================
-# 8. OPENROUTER РЕКОМЕНДАЦИИ
+# 8. DEEPSEEK РЕКОМЕНДАЦИИ
 # ==========================================
 
 def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru'):
-    if not OPENROUTER_API_KEY:
-        print("❌ OPENROUTER_API_KEY не установлен для рекомендаций", flush=True)
+    if not DEEPSEEK_API_KEY:
+        print("❌ DEEPSEEK_API_KEY не установлен для рекомендаций", flush=True)
         return get_rule_based_recommendations(pollution_analysis, lang)
     
     wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'N/A'
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
-    # Получаем данные
     aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
     pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
     pm10 = air_data.get('pm10', 'N/A') if air_data else 'N/A'
     so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
     no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
-    co = air_data.get('co', 'N/A') if air_data else 'N/A'
-    o3 = air_data.get('o3', 'N/A') if air_data else 'N/A'
     temp = weather.get('temp', 'N/A') if weather else 'N/A'
     humidity = weather.get('humidity', 'N/A') if weather else 'N/A'
     
-    risk_level = pollution_analysis.get('level_code', 1)
+    prompt = f"""Ты эксперт по экологии и здоровью.
+
+ДАННЫЕ О ВОЗДУХЕ:
+- AQI: {aqi}
+- PM2.5: {pm25} µg/m3
+- PM10: {pm10} µg/m3
+- SO2: {so2} µg/m3
+- NO2: {no2} µg/m3
+- Статус: {pollution_analysis.get('level_str', 'Неизвестно')}
+
+ПОГОДА:
+- Температура: {temp}°C
+- Влажность: {humidity}%
+- Ветер: {wind_dir}
+
+Дай КОНКРЕТНЫЕ рекомендации:
+
+1. 🏃‍♂️ ФИЗИЧЕСКАЯ АКТИВНОСТЬ
+- Можно ли гулять/бегать?
+- Как долго?
+- Какая интенсивность?
+
+2. 🥗 ПИТАНИЕ (5-7 продуктов)
+- Название продукта
+- Почему полезен именно при таком воздухе?
+
+3. 💧 ПИТЬЕВОЙ РЕЖИМ
+- Сколько воды пить?
+- Что добавить (лимон, имбирь)?
+
+4. 💊 ВИТАМИНЫ И ДОБАВКИ
+- Какие именно?
+- Дозировка?
+
+Отвечай на {lang_name}. Будь конкретным."""
     
-    # Определяем тип загрязнения
-    pollution_type = "смешанное"
-    if isinstance(no2, (int, float)) and no2 > 40 and isinstance(co, (int, float)) and co > 500:
-        pollution_type = "транспортное (трафик)"
-    elif isinstance(so2, (int, float)) and so2 > 20:
-        pollution_type = "промышленное (сжигание топлива)"
-    elif isinstance(pm25, (int, float)) and pm25 > 25 and isinstance(no2, (int, float)) and no2 < 20:
-        pollution_type = "пылевое (стройка, дороги)"
-    elif isinstance(o3, (int, float)) and o3 and o3 > 100:
-        pollution_type = "фотохимическое (смог)"
+    system_prompt = f"Ты эксперт по здоровью. Отвечай на {lang_name}."
     
-    prompt = (
-        f"Ты эксперт по экологии, токсикологии и нутрициологии.\n"
-        f"Дай рекомендации на основе КОНКРЕТНЫХ данных.\n\n"
-        f"📊 ДАННЫЕ О ВОЗДУХЕ:\n"
-        f"AQI: {aqi}\n"
-        f"PM2.5: {pm25} µg/m3\n"
-        f"PM10: {pm10} µg/m3\n"
-        f"SO2: {so2} µg/m3\n"
-        f"NO2: {no2} µg/m3\n"
-        f"CO: {co} µg/m3\n"
-        f"O3: {o3} µg/m3\n\n"
-        f"🌤 ПОГОДА:\n"
-        f"Температура: {temp}°C\n"
-        f"Влажность: {humidity}%\n"
-        f"Ветер: {wind_dir}\n\n"
-        f"🏭 ТИП ЗАГРЯЗНЕНИЯ: {pollution_type}\n"
-        f"⚠️ УРОВЕНЬ РИСКА: {risk_level}/5\n\n"
-        f"Дай рекомендации С УЧЕТОМ ТИПА ЗАГРЯЗНЕНИЯ:\n\n"
-    )
-    
-    if pollution_type == "транспортное (трафик)":
-        prompt += (
-            f"ОСОБЕННОСТИ: NO2 и CO от выхлопных газов\n"
-            f"1. 🏃‍♂️ Активность: избегать улиц с трафиком\n"
-            f"2. 🥗 Питание: продукты с витамином C и E (защита от оксидантов)\n"
-            f"3. 💧 Вода: 2-2.5 литра (выведение токсинов)\n"
-            f"4. 💊 Витамины: C, E, Омега-3, Селен\n"
-        )
-    elif pollution_type == "промышленное (сжигание топлива)":
-        prompt += (
-            f"ОСОБЕННОСТИ: SO2 от сжигания топлива\n"
-            f"1. 🏃‍♂️ Активность: ограничить, SO2 раздражает дыхательные пути\n"
-            f"2. 🥗 Питание: молочные продукты (связывают SO2), антиоксиданты\n"
-            f"3. 💧 Вода: 2.5-3 литра (ускоренное выведение)\n"
-            f"4. 💊 Витамины: C (1000мг), E, Цинк, N-ацетилцистеин\n"
-        )
-    elif pollution_type == "пылевое (стройка, дороги)":
-        prompt += (
-            f"ОСОБЕННОСТИ: PM2.5/PM10 — мелкие частицы\n"
-            f"1. 🏃‍♂️ Активность: избегать ветреных мест, стройплощадок\n"
-            f"2. 🥗 Питание: продукты с клетчаткой (выведение частиц)\n"
-            f"3. 💧 Вода: 2-2.5 литра\n"
-            f"4. 💊 Витамины: C, E, Бета-каротин\n"
-        )
-    else:
-        prompt += (
-            f"ОСОБЕННОСТИ: комплексное загрязнение\n"
-            f"1. 🏃‍♂️ Активность: по уровню AQI\n"
-            f"2. 🥗 Питание: максимально антиоксидантное\n"
-            f"3. 💧 Вода: 2-3 литра\n"
-            f"4. 💊 Витамины: C, E, Омега-3, Цинк, Селен\n"
-        )
-    
-    prompt += (
-        f"\nФОРМАТ: Кратко, конкретно, с эмодзи.\n"
-        f"Учитывай тип загрязнения при рекомендациях.\n"
-        f"Отвечай на языке: {lang_name}"
-    )
-    
-    system_prompt = (
-        f"Ты эксперт по здоровью. "
-        f"Рекомендации должны соответствовать типу загрязнения. "
-        f"Язык: {lang_name}"
-    )
-    
-    print(f"🤖 Рекомендации (тип: {pollution_type}, риск: {risk_level}/5)", flush=True)
-    result = call_openrouter(prompt, system_prompt, max_tokens=800, temperature=0.4)
+    print("🤖 Запрос рекомендаций через DeepSeek...", flush=True)
+    result = call_deepseek(prompt, system_prompt, max_tokens=800, temperature=0.4)
     
     if result:
         return result
@@ -499,8 +388,6 @@ def get_rule_based_recommendations(pollution_analysis, lang='ru'):
 # ==========================================
 
 def format_full_response(air_data, weather, pollution_analysis, recommendations, source_name, lang='ru', ai_source_analysis=None):
-    print(f"🌍 Форматирование на языке: {lang}", flush=True)
-    
     if not lang:
         lang = 'ru'
     
@@ -554,6 +441,7 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
     msg += "───────────────────────\n"
     msg += f"{recommendations}"
     msg += f"\n\n📡 _{t['source']}: {source_name}_"
+    msg += f"\n🤖 _AI: DeepSeek_"
     
     return msg
 
@@ -579,7 +467,6 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['lang'])
 def change_language(message):
-    """Команда для смены языка"""
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
     bot.send_message(message.chat.id, "Выберите язык / Choose language:", reply_markup=markup)
@@ -595,8 +482,6 @@ def set_language(message):
     
     user_languages[str(message.chat.id)] = lang
     save_user_languages()
-    
-    print(f"✅ Язык сохранен: {lang} для {message.chat.id}", flush=True)
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     btn_text = {
@@ -620,19 +505,12 @@ def handle_location(message):
     user_id = str(message.chat.id)
     user_ids.add(message.chat.id)
     
-    # Получаем язык пользователя
     lang = user_languages.get(user_id, 'ru')
-    print(f"🌍 Язык пользователя: {lang}", flush=True)
     
-    # Если язык не выбран, просим выбрать
     if user_id not in user_languages:
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
-        bot.send_message(
-            message.chat.id,
-            "Сначала выберите язык / First choose language:",
-            reply_markup=markup
-        )
+        bot.send_message(message.chat.id, "Сначала выберите язык / First choose language:", reply_markup=markup)
         return
     
     lat = float(message.location.latitude)
@@ -650,10 +528,7 @@ def handle_location(message):
     pollution_analysis = analyze_pollution(air_data, lang)
     recommendations = get_ai_recommendations(air_data, weather, pollution_analysis, lang)
     
-    response = format_full_response(
-        air_data, weather, pollution_analysis,
-        recommendations, source_name, lang, ai_source_analysis
-    )
+    response = format_full_response(air_data, weather, pollution_analysis, recommendations, source_name, lang, ai_source_analysis)
     
     safe_send_message(message.chat.id, response)
 
@@ -663,7 +538,7 @@ def handle_location(message):
 
 def background_notifier():
     while True:
-        time.sleep(21600)  # 6 часов
+        time.sleep(21600)
         for uid in list(user_ids):
             try:
                 lang = user_languages.get(str(uid), 'ru')
@@ -684,7 +559,7 @@ if __name__ == '__main__':
     print("=" * 50, flush=True)
     print("🚀 ЗАПУСК БОТА...", flush=True)
     print(f"🔑 BOT_TOKEN: {'✅' if BOT_TOKEN and BOT_TOKEN != 'DUMMY_TOKEN' else '❌'}", flush=True)
-    print(f"🤖 OPENROUTER: {'✅' if OPENROUTER_API_KEY else '❌'}", flush=True)
+    print(f"🤖 DEEPSEEK: {'✅' if DEEPSEEK_API_KEY else '❌'}", flush=True)
     print(f"🌤 WEATHER: {'✅' if WEATHER_API_KEY else '❌'}", flush=True)
     print("=" * 50, flush=True)
     
@@ -692,13 +567,11 @@ if __name__ == '__main__':
         print("❌ Установите BOT_TOKEN!", flush=True)
         sys.exit(1)
     
-    # Очистка старых процессов (безопасно)
     print("🔄 Очистка старых процессов...", flush=True)
     current_pid = os.getpid()
     os.system(f"ps aux | grep 'bot.py' | grep -v grep | grep -v {current_pid} | awk '{{print $2}}' | xargs -r kill -9 2>/dev/null || true")
     time.sleep(3)
     
-    # Удаляем webhook
     print("🔄 Удаление webhook...", flush=True)
     try:
         bot.remove_webhook()
@@ -707,16 +580,10 @@ if __name__ == '__main__':
     except:
         pass
     
-    # Загружаем языки
     load_user_languages()
     
-    # Запускаем health check
     threading.Thread(target=start_health_check_server, daemon=True).start()
-    
-    # Запускаем keep-alive
     threading.Thread(target=keep_alive, daemon=True).start()
-    
-    # Запускаем уведомления
     threading.Thread(target=background_notifier, daemon=True).start()
     
     print("🤖 БОТ ГОТОВ К РАБОТЕ!", flush=True)
