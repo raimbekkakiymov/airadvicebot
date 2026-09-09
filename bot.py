@@ -293,42 +293,56 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
 # ==========================================
 
 def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', source_analysis=None):
-    """Рекомендации на основе анализа источников"""
+    """Детальные рекомендации с объяснением пользы"""
     if not DEEPSEEK_API_KEY:
         return get_rule_based_recommendations(pollution_analysis, lang)
     
     wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'N/A'
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
-    # Краткие данные
     aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
     pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
+    so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
+    no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
     temp = weather.get('temp', 'N/A') if weather else 'N/A'
     
-    # Базовый промпт
-    prompt = (
-        f"Ты эксперт по здоровью. ОТВЕЧАЙ КОРОТКО.\n\n"
-        f"Воздух: AQI={aqi}, PM2.5={pm25}, Температура={temp}°C\n"
-        f"Ветер: {wind_dir}\n"
-    )
+    prompt = f"""Ты эксперт по нутрициологии и здоровью.
+
+ВОЗДУХ: AQI={aqi}, PM2.5={pm25}, SO2={so2}, NO2={no2}
+ПОГОДА: {temp}°C, ветер {wind_dir}
+
+АНАЛИЗ: {source_analysis if source_analysis else 'Нет данных'}
+
+ДАЙ РЕКОМЕНДАЦИИ:
+
+1. 🏃‍♂️ АКТИВНОСТЬ
+[1 предложение]
+
+2. 🥗 ПИТАНИЕ — объясни почему каждый продукт:
+• Яблоко — [пектин связывает токсины]
+• Морковь — [бета-каротин для легких]
+• Зеленый чай — [катехины-антиоксиданты]
+• Оливковое масло — [витамин E, омега-9]
+• Брокколи — [сульфорафан детоксикация]
+• [1-2 продукта под ситуацию]
+
+3. 💧 ВОДА
+[сколько + что добавить]
+
+4. 💊 ВИТАМИНЫ — объясни почему:
+• Витамин C — [антиоксидант]
+• Омега-3 — [противовоспалительное]
+• Магний — [расслабляет бронхи]
+• Витамин D — [иммунитет]
+• Цинк — [защита клеток]
+
+ФОРМАТ: Каждый пункт с "—" и кратким объяснением.
+Язык: {lang_name}"""
     
-    # Добавляем анализ источников если есть
-    if source_analysis:
-        prompt += f"\nАнализ источников:\n{source_analysis}\n"
+    system_prompt = f"Объясняй пользу каждого продукта. Язык: {lang_name}"
     
-    prompt += (
-        f"\nДай КОРОТКИЕ рекомендации:\n"
-        f"1. 🏃‍♂️ Активность: [1 предложение]\n"
-        f"2. 🥗 Питание: [3-4 продукта]\n"
-        f"3. 💧 Вода: [1 предложение]\n"
-        f"4. 💊 Витамины: [2-3 штуки]\n\n"
-        f"Без лишних объяснений. Язык: {lang_name}"
-    )
-    
-    system_prompt = f"Отвечай кратко, по делу. Язык: {lang_name}"
-    
-    print("🤖 Короткие рекомендации...", flush=True)
-    result = call_deepseek(prompt, system_prompt, max_tokens=300, temperature=0.4)
+    print("🤖 Детальные рекомендации...", flush=True)
+    result = call_deepseek(prompt, system_prompt, max_tokens=700, temperature=0.4)
     
     if result:
         return result
