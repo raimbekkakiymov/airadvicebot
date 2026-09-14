@@ -290,23 +290,27 @@ def parse_aqicn(lat, lon):
         return None
 
 def parse_airkz(lat, lon):
-    """AirKZ — Казахстан (исправлены домены)"""
+    """AirKZ — Казахстан (ПРАВИЛЬНЫЙ домен airkaz.org)"""
     if not PARSING_AVAILABLE:
         return None
     try:
         urls_to_try = [
-            "https://airkaz.com",
-            "https://air.kz",
-            "https://www.airkaz.com/map",
+            "https://www.airkaz.org/api/stations",
+            "https://www.airkaz.org/api/v1/stations",
+            "https://www.airkaz.org/",
+            "https://airkaz.org/",
         ]
         
         for url in urls_to_try:
             try:
-                r = scraper.get(url, timeout=5, allow_redirects=True)
+                print(f"🔍 AirKZ проверяю: {url}", flush=True)
+                r = scraper.get(url, timeout=8, allow_redirects=True)
+                
                 if r.status_code == 200:
-                    print(f"✅ AirKZ: {url}", flush=True)
+                    print(f"✅ AirKZ доступен: {url}", flush=True)
                     
-                    if r.headers.get('content-type', '').startswith('application/json'):
+                    # JSON API
+                    if 'json' in r.headers.get('content-type', ''):
                         try:
                             data = r.json()
                             result = find_h2s_in_json(data)
@@ -314,18 +318,34 @@ def parse_airkz(lat, lon):
                                 result['source'] = 'AirKZ'
                                 result['station'] = result.get('station', 'AirKZ')
                                 return result
-                        except:
-                            pass
+                        except Exception as e:
+                            print(f"⚠️ AirKZ JSON: {e}", flush=True)
                     
+                    # HTML парсинг
                     soup = BeautifulSoup(r.text, 'lxml')
                     result = find_h2s_in_html(soup)
                     if result:
                         result['source'] = 'AirKZ'
                         result['station'] = result.get('station', 'AirKZ')
                         return result
+                    
+                    # Поиск данных в SPA (__NEXT_DATA__ или script)
+                    for script in soup.find_all('script'):
+                        if script.string and ('h2s' in script.string.lower() or 'сероводород' in script.string.lower()):
+                            print(f"✅ AirKZ: H₂S найден в script", flush=True)
+                            match = re.search(r'h2s["\']?\s*[:=]\s*["\']?([\d.,]+)', script.string, re.I)
+                            if match:
+                                return {
+                                    'h2s': match.group(1).replace(',', '.'),
+                                    'unit': 'µg/m³',
+                                    'source': 'AirKZ',
+                                    'station': 'AirKZ'
+                                }
             except Exception as e:
                 print(f"⚠️ AirKZ {url}: {e}", flush=True)
                 continue
+        
+        print(f"❌ AirKZ: H₂S не найден", flush=True)
         return None
     except Exception as e:
         print(f"❌ AirKZ: {e}", flush=True)
@@ -375,7 +395,7 @@ def parse_kazhydromet(lat, lon):
         return None
 
 def parse_airnow(lat, lon):
-    """AirNow — США"""
+    """AirNow — США (фикс DeprecationWarning)"""
     if not PARSING_AVAILABLE:
         return None
     try:
@@ -392,7 +412,8 @@ def parse_airnow(lat, lon):
         
         soup = BeautifulSoup(r.text, 'lxml')
         
-        for elem in soup.find_all(text=re.compile(r'H2S|Hydrogen Sulfide', re.I)):
+        # ИСПРАВЛЕНО: string= вместо text=
+        for elem in soup.find_all(string=re.compile(r'H2S|Hydrogen Sulfide', re.I)):
             parent = elem.find_parent()
             if parent:
                 match = re.search(r'([\d.]+)', parent.get_text())
@@ -424,7 +445,8 @@ def find_h2s_in_json(data):
     return None
 
 def find_h2s_in_html(soup):
-    for elem in soup.find_all(text=re.compile(r'h2s|сероводород|hydrogen sulfide', re.I)):
+    """Поиск H₂S в HTML (ИСПРАВЛЕНО: string= вместо text=)"""
+    for elem in soup.find_all(string=re.compile(r'h2s|сероводород|hydrogen sulfide', re.I)):
         parent = elem.find_parent()
         if parent:
             match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb|ppm)', parent.get_text())
@@ -467,7 +489,6 @@ def _parse_h2s_all_sources(lat, lon, air_data=None):
     
     region = detect_region(lat, lon)
     
-    # Список парсеров в порядке приоритета
     if region == 'kz':
         parsers = [parse_airkz, parse_kazhydromet, parse_iqair, parse_aqicn]
     elif region == 'us':
@@ -475,7 +496,6 @@ def _parse_h2s_all_sources(lat, lon, air_data=None):
     else:
         parsers = [parse_iqair, parse_aqicn]
     
-    # Параллельный запуск всех парсеров
     results = {}
     results_lock = Lock()
     threads = []
@@ -498,11 +518,9 @@ def _parse_h2s_all_sources(lat, lon, air_data=None):
         t.start()
         threads.append(t)
     
-    # Ждём максимум 12 секунд (все парсеры параллельно)
     for t in threads:
         t.join(timeout=12)
     
-    # Возвращаем первый успешный результат (в порядке приоритета)
     for parser in parsers:
         if parser.__name__ in results:
             print(f"✅ H₂S найден: {parser.__name__}", flush=True)
