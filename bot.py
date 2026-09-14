@@ -3,13 +3,29 @@ import sys
 import math
 import time
 import json
+import re
 import logging
 import threading
 import requests
 import telebot
 from telebot import types
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from datetime import datetime
+from datetime import datetime, timedelta
+from threading import Lock
+
+# Парсинг
+try:
+    import cloudscraper
+    from bs4 import BeautifulSoup
+    PARSING_AVAILABLE = True
+    # Создаём сессию с обходом Cloudflare
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}
+    )
+except ImportError:
+    PARSING_AVAILABLE = False
+    scraper = None
+    print("⚠️ cloudscraper/bs4 не установлены — H₂S парсинг отключён", flush=True)
 
 # ==========================================
 # 1. СЕРВЕР ДЛЯ RENDER (HEALTH CHECK)
@@ -57,6 +73,8 @@ DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
 PID_FILE = "bot.pid"
 USER_LANG_FILE = "user_languages.json"
+H2S_CACHE_FILE = "h2s_cache.json"
+H2S_UPDATE_DAYS = 7  # обновлять раз в неделю
 
 if not BOT_TOKEN:
     print("❌ ВНИМАНИЕ: BOT_TOKEN не установлен!", flush=True)
@@ -67,6 +85,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 
 user_languages = {}
 user_ids = set()
+h2s_cache = {}
+h2s_cache_lock = Lock()
 
 def load_user_languages():
     global user_languages
@@ -87,11 +107,482 @@ def save_user_languages():
         logging.error(f"Ошибка сохранения: {e}")
 
 # ==========================================
-# 3. DEEPSEEK API
+# 3. H₂S КЭШ
+# ==========================================
+
+def load_h2s_cache():
+    """Загрузка кэша H₂S"""
+    global h2s_cache
+    if os.path.exists(H2S_CACHE_FILE):
+        try:
+            with open(H2S_CACHE_FILE, 'r', encoding='utf-8') as f:
+                h2s_cache = json.load(f)
+            print(f"✅ Загружено {len(h2s_cache)} записей H₂S из кэша", flush=True)
+        except Exception as e:
+            logging.error(f"Ошибка загрузки H₂S кэша: {e}")
+            h2s_cache = {}
+
+def save_h2s_cache():
+    """Сохранение кэша H₂S"""
+    try:
+        with h2s_cache_lock:
+            with open(H2S_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(h2s_cache, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logging.error(f"Ошибка сохранения H₂S кэша: {e}")
+
+def get_cache_key(lat, lon):
+    """Ключ кэша с округлением координат (~1 км)"""
+    return f"{round(lat, 2)},{round(lon, 2)}"
+
+def is_cache_fresh(key):
+    """Проверка свежести кэша"""
+    if key not in h2s_cache:
+        return False
+    
+    entry = h2s_cache[key]
+    
+    if 'next_update' in entry:
+        try:
+            next_update = datetime.fromisoformat(entry['next_update'])
+            return datetime.now() < next_update
+        except:
+            pass
+    
+    if 'updated' in entry:
+        try:
+            updated = datetime.fromisoformat(entry['updated'])
+            return datetime.now() - updated < timedelta(days=H2S_UPDATE_DAYS)
+        except:
+            pass
+    
+    return False
+
+# ==========================================
+# 4. ОПРЕДЕЛЕНИЕ РЕГИОНА
+# ==========================================
+
+def detect_region(lat, lon):
+    """Определение региона по координатам"""
+    if 40 < lat < 56 and 46 < lon < 88:
+        return 'kz'
+    if 24 < lat < 72 and -170 < lon < -50:
+        return 'us'
+    if 35 < lat < 72 and -25 < lon < 45:
+        return 'eu'
+    if 12 < lat < 42 and 30 < lon < 65:
+        return 'me'
+    return 'world'
+
+# ==========================================
+# 5. ПАРСЕРЫ H₂S
+# ==========================================
+
+def parse_iqair(lat, lon):
+    """IQAir — глобальный источник"""
+    if not PARSING_AVAILABLE:
+        return None
+    try:
+        search_url = f"https://www.iqair.com/search?q={lat},{lon}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                         'AppleWebKit/537.36 (KHTML, like Gecko) '
+                         'Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        
+        r = scraper.get(search_url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(r.text, 'lxml')
+        
+        city_link = None
+        for a in soup.find_all('a', href=True):
+            if '/world-air-quality' in a['href'] or '/air-quality' in a['href']:
+                city_link = a['href']
+                break
+        
+        if not city_link:
+            return None
+        
+        if not city_link.startswith('http'):
+            city_link = 'https://www.iqair.com' + city_link
+        
+        r = scraper.get(city_link, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(r.text, 'lxml')
+        
+        h2s_value = None
+        h2s_unit = None
+        
+        for row in soup.find_all('tr'):
+            text = row.get_text().lower()
+            if 'h2s' in text or 'hydrogen sulfide' in text or 'сероводород' in text:
+                cells = row.find_all(['td', 'th'])
+                for cell in cells:
+                    match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb|ppm)',
+                                      cell.get_text())
+                    if match:
+                        h2s_value = match.group(1).replace(',', '.')
+                        h2s_unit = match.group(2)
+                        break
+                if h2s_value:
+                    break
+        
+        if h2s_value:
+            city_name = soup.find('h1')
+            city_name = city_name.get_text(strip=True) if city_name else 'Unknown'
+            print(f"✅ IQAir: H₂S={h2s_value} {h2s_unit}", flush=True)
+            return {
+                'h2s': h2s_value,
+                'unit': h2s_unit or 'µg/m³',
+                'source': 'IQAir',
+                'station': city_name
+            }
+        return None
+    except Exception as e:
+        print(f"❌ IQAir parse error: {e}", flush=True)
+        return None
+
+def parse_aqicn(lat, lon):
+    """AQICN — глобальный"""
+    if not PARSING_AVAILABLE:
+        return None
+    try:
+        url = f"https://aqicn.org/city/geo/{lat},{lon}/"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                         'AppleWebKit/537.36 (KHTML, like Gecko) '
+                         'Chrome/120.0.0.0 Safari/537.36',
+        }
+        
+        r = scraper.get(url, headers=headers, timeout=15, allow_redirects=True)
+        if r.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(r.text, 'lxml')
+        
+        h2s_value = None
+        h2s_unit = None
+        station_name = None
+        
+        for elem in soup.find_all(['div', 'td', 'tr', 'span']):
+            text = elem.get_text().lower()
+            if 'h2s' in text or 'сероводород' in text or 'hydrogen sulfide' in text:
+                parent = elem.find_parent()
+                if parent:
+                    match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb)',
+                                      parent.get_text())
+                    if match:
+                        h2s_value = match.group(1).replace(',', '.')
+                        h2s_unit = match.group(2)
+                        break
+        
+        h1 = soup.find('h1')
+        if h1:
+            station_name = h1.get_text(strip=True)
+        
+        if h2s_value:
+            print(f"✅ AQICN: H₂S={h2s_value} {h2s_unit}", flush=True)
+            return {
+                'h2s': h2s_value,
+                'unit': h2s_unit,
+                'source': 'AQICN',
+                'station': station_name or 'Unknown'
+            }
+        return None
+    except Exception as e:
+        print(f"❌ AQICN parse error: {e}", flush=True)
+        return None
+
+def parse_airkz(lat, lon):
+    """AirKZ — Казахстан"""
+    if not PARSING_AVAILABLE:
+        return None
+    try:
+        urls_to_try = [
+            "https://airkz.kz/",
+            "https://www.airkz.kz/",
+            "https://airkz.kz/map",
+        ]
+        
+        for url in urls_to_try:
+            try:
+                r = scraper.get(url, timeout=10)
+                if r.status_code == 200:
+                    print(f"✅ AirKZ доступен: {url}", flush=True)
+                    
+                    if r.headers.get('content-type', '').startswith('application/json'):
+                        try:
+                            data = r.json()
+                            result = find_h2s_in_json(data)
+                            if result:
+                                result['source'] = 'AirKZ'
+                                result['station'] = result.get('station', 'AirKZ')
+                                return result
+                        except:
+                            pass
+                    
+                    soup = BeautifulSoup(r.text, 'lxml')
+                    result = find_h2s_in_html(soup)
+                    if result:
+                        result['source'] = 'AirKZ'
+                        result['station'] = result.get('station', 'AirKZ')
+                        return result
+            except:
+                continue
+        return None
+    except Exception as e:
+        print(f"❌ AirKZ parse error: {e}", flush=True)
+        return None
+
+def parse_kazhydromet(lat, lon):
+    """Казгидромет — официальный источник Казахстана"""
+    if not PARSING_AVAILABLE:
+        return None
+    try:
+        url = "https://www.kazhydromet.kz/ru/ecology/monitoring"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                         'AppleWebKit/537.36 (KHTML, like Gecko) '
+                         'Chrome/120.0.0.0 Safari/537.36',
+            'Accept-Language': 'ru-RU,ru;q=0.9',
+        }
+        
+        r = scraper.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(r.text, 'lxml')
+        
+        for table in soup.find_all('table'):
+            table_text = table.get_text().lower()
+            
+            if 'сероводород' in table_text or 'h2s' in table_text:
+                rows = table.find_all('tr')
+                for row in rows:
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) >= 2:
+                        city = cells[0].get_text(strip=True)
+                        for cell in cells[1:]:
+                            cell_text = cell.get_text(strip=True)
+                            if re.search(r'[\d.,]+', cell_text):
+                                print(f"✅ Казгидромет: {city} = {cell_text}", flush=True)
+                                return {
+                                    'h2s': cell_text,
+                                    'unit': 'mg/m³',
+                                    'source': 'Казгидромет',
+                                    'station': city
+                                }
+        return None
+    except Exception as e:
+        print(f"❌ Казгидромет parse error: {e}", flush=True)
+        return None
+
+def parse_airnow(lat, lon):
+    """AirNow — США"""
+    if not PARSING_AVAILABLE:
+        return None
+    try:
+        url = f"https://www.airnow.gov/?latitude={lat}&longitude={lon}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                         'AppleWebKit/537.36 (KHTML, like Gecko) '
+                         'Chrome/120.0.0.0 Safari/537.36',
+        }
+        
+        r = scraper.get(url, headers=headers, timeout=15)
+        if r.status_code != 200:
+            return None
+        
+        soup = BeautifulSoup(r.text, 'lxml')
+        
+        for elem in soup.find_all(text=re.compile(r'H2S|Hydrogen Sulfide', re.I)):
+            parent = elem.find_parent()
+            if parent:
+                match = re.search(r'([\d.]+)', parent.get_text())
+                if match:
+                    return {
+                        'h2s': match.group(1),
+                        'unit': 'AQI',
+                        'source': 'AirNow',
+                        'station': 'US EPA'
+                    }
+        return None
+    except Exception as e:
+        print(f"❌ AirNow parse error: {e}", flush=True)
+        return None
+
+def find_h2s_in_json(data):
+    """Рекурсивный поиск H₂S в JSON"""
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if 'h2s' in str(key).lower() or 'сероводород' in str(key).lower():
+                return {'h2s': value, 'unit': 'µg/m³'}
+            result = find_h2s_in_json(value)
+            if result:
+                return result
+    elif isinstance(data, list):
+        for item in data:
+            result = find_h2s_in_json(item)
+            if result:
+                return result
+    return None
+
+def find_h2s_in_html(soup):
+    """Поиск H₂S в HTML"""
+    for elem in soup.find_all(text=re.compile(r'h2s|сероводород|hydrogen sulfide', re.I)):
+        parent = elem.find_parent()
+        if parent:
+            match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb|ppm)', parent.get_text())
+            if match:
+                return {
+                    'h2s': match.group(1).replace(',', '.'),
+                    'unit': match.group(2)
+                }
+    return None
+
+def estimate_h2s_indirect(air_data):
+    """Косвенная оценка H₂S по SO2"""
+    if not air_data:
+        return None
+    
+    so2 = air_data.get('so2')
+    if not isinstance(so2, (int, float)):
+        return None
+    
+    if so2 > 50:
+        return {
+            'h2s': 'Повышен (косвенно)',
+            'unit': f'SO2={so2} µg/m³',
+            'source': 'Оценка по SO2',
+            'station': 'косвенная оценка'
+        }
+    elif so2 > 20:
+        return {
+            'h2s': 'Умеренный (косвенно)',
+            'unit': f'SO2={so2} µg/m³',
+            'source': 'Оценка по SO2',
+            'station': 'косвенная оценка'
+        }
+    return None
+
+def _parse_h2s_all_sources(lat, lon, air_data=None):
+    """Парсинг по всем источникам"""
+    if not PARSING_AVAILABLE:
+        return estimate_h2s_indirect(air_data)
+    
+    region = detect_region(lat, lon)
+    
+    if region == 'kz':
+        for parser in [parse_airkz, parse_kazhydromet]:
+            try:
+                result = parser(lat, lon)
+                if result:
+                    return result
+            except Exception as e:
+                print(f"⚠️ {parser.__name__}: {e}", flush=True)
+    
+    if region == 'us':
+        result = parse_airnow(lat, lon)
+        if result:
+            return result
+    
+    for parser in [parse_iqair, parse_aqicn]:
+        try:
+            result = parser(lat, lon)
+            if result:
+                return result
+        except Exception as e:
+            print(f"⚠️ {parser.__name__}: {e}", flush=True)
+    
+    return estimate_h2s_indirect(air_data)
+
+def _parse_and_cache(key, lat, lon, air_data, lang):
+    """Парсинг + сохранение в кэш"""
+    try:
+        result = _parse_h2s_all_sources(lat, lon, air_data)
+        now = datetime.now()
+        
+        if result:
+            h2s_cache[key] = {
+                'h2s': result.get('h2s', 'N/A'),
+                'unit': result.get('unit', 'µg/m³'),
+                'source': result['source'],
+                'station': result.get('station', 'Unknown'),
+                'updated': now.isoformat(),
+                'next_update': (now + timedelta(days=H2S_UPDATE_DAYS)).isoformat(),
+                'failures': 0
+            }
+            print(f"✅ H₂S сохранён: {result['source']}", flush=True)
+        else:
+            failures = h2s_cache.get(key, {}).get('failures', 0) + 1
+            h2s_cache[key] = {
+                'h2s': None,
+                'unit': None,
+                'source': 'Нет данных',
+                'station': None,
+                'updated': now.isoformat(),
+                'next_update': (now + timedelta(days=H2S_UPDATE_DAYS)).isoformat(),
+                'failures': failures
+            }
+            print(f"⚠️ H₂S не найден (попытка {failures})", flush=True)
+        
+        save_h2s_cache()
+        return h2s_cache.get(key)
+    except Exception as e:
+        logging.error(f"Ошибка парсинга H₂S: {e}")
+        return None
+
+def _update_h2s_async(key, lat, lon, air_data, lang):
+    """Фоновое обновление"""
+    try:
+        _parse_and_cache(key, lat, lon, air_data, lang)
+        print(f"✅ H₂S кэш обновлён для {key}", flush=True)
+    except Exception as e:
+        logging.error(f"Ошибка фонового обновления H₂S: {e}")
+
+def get_h2s_cached(lat, lon, air_data=None, lang='ru'):
+    """Получение H₂S с умным кэшированием"""
+    if not PARSING_AVAILABLE:
+        return estimate_h2s_indirect(air_data)
+    
+    key = get_cache_key(lat, lon)
+    
+    # Свежий кэш
+    if is_cache_fresh(key):
+        entry = h2s_cache[key]
+        try:
+            age_days = (datetime.now() - datetime.fromisoformat(entry['updated'])).days
+            print(f"📦 H₂S из кэша (возраст: {age_days} дн.)", flush=True)
+        except:
+            pass
+        return entry
+    
+    # Устарел — обновляем в фоне
+    print(f"🔄 H₂S кэш устарел, обновляю в фоне...", flush=True)
+    threading.Thread(
+        target=_update_h2s_async,
+        args=(key, lat, lon, air_data, lang),
+        daemon=True
+    ).start()
+    
+    # Если есть старые данные — отдаём их
+    if key in h2s_cache:
+        return h2s_cache[key]
+    
+    # Первый запрос — ждём
+    print(f"⏳ Первый запрос H₂S — ждём парсинга...", flush=True)
+    return _parse_and_cache(key, lat, lon, air_data, lang)
+
+# ==========================================
+# 6. DEEPSEEK API
 # ==========================================
 
 def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
-    """Универсальная функция для вызова DeepSeek API"""
     if not DEEPSEEK_API_KEY:
         print("❌ DEEPSEEK_API_KEY не установлен", flush=True)
         return None
@@ -125,14 +616,13 @@ def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
                 return result
         else:
             print(f"❌ DeepSeek error {r.status_code}: {r.text}", flush=True)
-    
     except Exception as e:
         print(f"❌ DeepSeek exception: {e}", flush=True)
     
     return None
 
 # ==========================================
-# 4. МАТЕМАТИКА
+# 7. МАТЕМАТИКА
 # ==========================================
 
 def calculate_bearing(lat1, lon1, lat2, lon2):
@@ -155,7 +645,7 @@ def get_wind_direction_text(deg, lang='ru'):
     return directions.get(lang, directions['ru'])[index]
 
 # ==========================================
-# 5. ВНЕШНИЕ API
+# 8. ВНЕШНИЕ API
 # ==========================================
 
 def get_weather(lat, lon):
@@ -219,7 +709,7 @@ def calculate_aqi_from_pm25(pm25):
         return 200
 
 # ==========================================
-# 6. АНАЛИЗ
+# 9. АНАЛИЗ
 # ==========================================
 
 def analyze_pollution(air_data, lang='ru'):
@@ -256,25 +746,28 @@ def analyze_pollution(air_data, lang='ru'):
     return {'level_str': t[1], 'level_code': 1}
 
 # ==========================================
-# 7. DEEPSEEK АНАЛИЗ ИСТОЧНИКОВ
+# 10. DEEPSEEK АНАЛИЗ ИСТОЧНИКОВ
 # ==========================================
 
-def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru'):
-    """Короткий анализ источников через DeepSeek"""
+def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, h2s_data, lang='ru'):
     if not DEEPSEEK_API_KEY:
         return None
     
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
-    # Получаем данные кратко
     aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
     pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
     so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
     no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
     
+    h2s_info = ""
+    if h2s_data and h2s_data.get('h2s'):
+        h2s_info = f"• H₂S: {h2s_data['h2s']} {h2s_data.get('unit', '')} (источник: {h2s_data.get('source', 'N/A')})\n"
+    
     prompt = (
         f"Ты эксперт по экологии. ОТВЕЧАЙ КОРОТКО (2-3 предложения).\n\n"
         f"Данные: AQI={aqi}, PM2.5={pm25}, SO2={so2}, NO2={no2}\n"
+        f"{h2s_info}"
         f"Ветер: {wind_dir_text}\n"
         f"Координаты: {lat}, {lon}\n\n"
         f"ФОРМАТ (строго):\n"
@@ -286,14 +779,13 @@ def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang='ru
     system_prompt = f"Отвечай кратко, без лишних слов. Язык: {lang_name}"
     
     print("🏭 Короткий анализ источников...", flush=True)
-    return call_deepseek(prompt, system_prompt, max_tokens=200, temperature=0.3)
+    return call_deepseek(prompt, system_prompt, max_tokens=250, temperature=0.3)
 
 # ==========================================
-# 8. DEEPSEEK РЕКОМЕНДАЦИИ
+# 11. DEEPSEEK РЕКОМЕНДАЦИИ
 # ==========================================
 
-def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', source_analysis=None):
-    """Детальные рекомендации с объяснением пользы"""
+def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', source_analysis=None, h2s_data=None):
     if not DEEPSEEK_API_KEY:
         return get_rule_based_recommendations(pollution_analysis, lang)
     
@@ -306,12 +798,16 @@ def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', sou
     no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
     temp = weather.get('temp', 'N/A') if weather else 'N/A'
     
+    h2s_info = ""
+    if h2s_data and h2s_data.get('h2s'):
+        h2s_info = f"• H₂S: {h2s_data['h2s']} {h2s_data.get('unit', '')}\n"
+    
     prompt = f"""Ты эксперт по нутрициологии и здоровью.
 
 ВОЗДУХ: AQI={aqi}, PM2.5={pm25}, SO2={so2}, NO2={no2}
-ПОГОДА: {temp}°C, ветер {wind_dir}
+{h2s_info}ПОГОДА: {temp}°C, ветер {wind_dir}
 
-АНАЛИЗ: {source_analysis if source_analysis else 'Нет данных'}
+АНАЛИЗ ИСТОЧНИКОВ: {source_analysis if source_analysis else 'Нет данных'}
 
 ДАЙ РЕКОМЕНДАЦИИ:
 
@@ -342,7 +838,7 @@ def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', sou
     system_prompt = f"Объясняй пользу каждого продукта. Язык: {lang_name}"
     
     print("🤖 Детальные рекомендации...", flush=True)
-    result = call_deepseek(prompt, system_prompt, max_tokens=700, temperature=0.4)
+    result = call_deepseek(prompt, system_prompt, max_tokens=900, temperature=0.4)
     
     if result:
         return result
@@ -368,10 +864,77 @@ def get_rule_based_recommendations(pollution_analysis, lang='ru'):
     )
 
 # ==========================================
-# 9. ФОРМАТИРОВАНИЕ
+# 12. ФОРМАТИРОВАНИЕ H₂S
 # ==========================================
 
-def format_full_response(air_data, weather, pollution_analysis, recommendations, source_name, lang='ru', ai_source_analysis=None):
+def format_h2s_block(h2s_data, lang='ru'):
+    titles = {
+        'ru': {
+            'title': "🛢 СЕРОВОДОРОД (H₂S)",
+            'value': "Значение", 'station': "Станция", 'source': "Источник",
+            'updated': "Обновлено", 'no_data': "Прямых датчиков рядом нет",
+            'estimate': "Косвенная оценка по SO₂",
+            'norm': "Норма ВОЗ: 0.15 мг/м³ (разово)",
+            'days_ago': "дн. назад", 'today': "сегодня", 'yesterday': "вчера"
+        },
+        'kk': {
+            'title': "🛢 КҮКІРТСУТЕК (H₂S)",
+            'value': "Мәні", 'station': "Станция", 'source': "Дереккөз",
+            'updated': "Жаңартылды", 'no_data': "Жақын жерде датчиктер жоқ",
+            'estimate': "SO₂ арқылы бағалау",
+            'norm': "ДДҰ нормасы: 0.15 мг/м³",
+            'days_ago': "күн бұрын", 'today': "бүгін", 'yesterday': "кеше"
+        },
+        'en': {
+            'title': "🛢 HYDROGEN SULFIDE (H₂S)",
+            'value': "Value", 'station': "Station", 'source': "Source",
+            'updated': "Updated", 'no_data': "No direct sensors nearby",
+            'estimate': "Indirect estimate via SO₂",
+            'norm': "WHO limit: 0.15 mg/m³",
+            'days_ago': "days ago", 'today': "today", 'yesterday': "yesterday"
+        }
+    }
+    
+    t = titles.get(lang, titles['ru'])
+    msg = f"**{t['title']}:**\n"
+    
+    if h2s_data and h2s_data.get('h2s'):
+        msg += f"• {t['value']}: {h2s_data['h2s']} {h2s_data.get('unit', '')}\n"
+        if h2s_data.get('station'):
+            msg += f"• {t['station']}: {h2s_data['station']}\n"
+        msg += f"• {t['source']}: {h2s_data['source']}\n"
+        
+        if h2s_data.get('updated'):
+            try:
+                updated = datetime.fromisoformat(h2s_data['updated'])
+                days = (datetime.now() - updated).days
+                if days == 0:
+                    age = t['today']
+                elif days == 1:
+                    age = t['yesterday']
+                else:
+                    age = f"{days} {t['days_ago']}"
+                msg += f"• {t['updated']}: {age}\n"
+            except:
+                pass
+        
+        msg += f"• {t['norm']}\n\n"
+    
+    elif h2s_data and h2s_data.get('source', '').startswith('Оценка'):
+        msg += f"• {t['estimate']}: {h2s_data['h2s']}\n"
+        msg += f"• {t['norm']}\n\n"
+    
+    else:
+        msg += f"• {t['no_data']}\n"
+        msg += f"• {t['norm']}\n\n"
+    
+    return msg
+
+# ==========================================
+# 13. ФОРМАТИРОВАНИЕ ОТЧЁТА
+# ==========================================
+
+def format_full_response(air_data, weather, pollution_analysis, recommendations, source_name, lang='ru', ai_source_analysis=None, h2s_data=None):
     if not lang:
         lang = 'ru'
     
@@ -419,6 +982,10 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
         msg += f"• {t['humidity']}: {weather['humidity']}%\n"
         msg += f"• {t['wind']}: {get_wind_direction_text(weather['wind_deg'], lang)}, {weather['wind_speed']} м/с\n\n"
     
+    # Блок H₂S
+    if h2s_data is not None:
+        msg += format_h2s_block(h2s_data, lang)
+    
     if ai_source_analysis:
         msg += f"{ai_source_analysis}\n\n"
     
@@ -430,41 +997,32 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
     return msg
 
 def safe_send_message(chat_id, text):
-    """Отправка с кнопками"""
     max_length = 4000
     
-    # Создаем клавиатуру с кнопками
     lang = user_languages.get(str(chat_id), 'ru')
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     
     location_text = {
-        'ru': "📍 Новая локация",
-        'kk': "📍 Жаңа орын",
-        'en': "📍 New location"
+        'ru': "📍 Новая локация", 'kk': "📍 Жаңа орын", 'en': "📍 New location"
     }.get(lang, "📍 New location")
     
     refresh_text = {
-        'ru': "🔄 Обновить",
-        'kk': "🔄 Жаңарту",
-        'en': "🔄 Refresh"
+        'ru': "🔄 Обновить", 'kk': "🔄 Жаңарту", 'en': "🔄 Refresh"
     }.get(lang, "🔄 Refresh")
     
     markup.add(types.KeyboardButton(location_text, request_location=True))
     markup.add(types.KeyboardButton(refresh_text))
     
-    # Остальной код отправки...
-    
     try:
         if len(text) <= max_length:
             try:
-                bot.send_message(chat_id, text, parse_mode='Markdown')
+                bot.send_message(chat_id, text, parse_mode='Markdown', reply_markup=markup)
             except:
-                bot.send_message(chat_id, text)
+                bot.send_message(chat_id, text, reply_markup=markup)
             return
         
         print(f"📤 Разбиваю длинное сообщение ({len(text)} символов)...", flush=True)
         
-        # Разбиваем по строкам
         parts = []
         current = ""
         
@@ -479,25 +1037,26 @@ def safe_send_message(chat_id, text):
         if current:
             parts.append(current)
         
-        # Отправляем части
         for i, part in enumerate(parts):
             if len(parts) > 1:
                 part += f"\n\n📄 Часть {i+1}/{len(parts)}"
             
             try:
-                bot.send_message(chat_id, part, parse_mode='Markdown')
+                if i == len(parts) - 1:
+                    bot.send_message(chat_id, part, parse_mode='Markdown', reply_markup=markup)
+                else:
+                    bot.send_message(chat_id, part, parse_mode='Markdown')
             except:
                 bot.send_message(chat_id, part)
             
             time.sleep(0.5)
         
         print(f"✅ Отправлено {len(parts)} частей", flush=True)
-        
     except Exception as e:
         logging.error(f"Send error: {e}")
 
 # ==========================================
-# 10. ОБРАБОТЧИКИ
+# 14. ОБРАБОТЧИКИ
 # ==========================================
 
 @bot.message_handler(commands=['start', 'help'])
@@ -527,19 +1086,13 @@ def set_language(message):
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     
-    # Кнопка локации
     location_text = {
-        'ru': "📍 Отправить локацию",
-        'kk': "📍 Орынды жіберу",
-        'en': "📍 Send Location"
+        'ru': "📍 Отправить локацию", 'kk': "📍 Орынды жіберу", 'en': "📍 Send Location"
     }.get(lang, "📍 Send Location")
     markup.add(types.KeyboardButton(location_text, request_location=True))
     
-    # Кнопка Старт
     start_text = {
-        'ru': "🚀 Старт",
-        'kk': "🚀 Бастау",
-        'en': "🚀 Start"
+        'ru': "🚀 Старт", 'kk': "🚀 Бастау", 'en': "🚀 Start"
     }.get(lang, "🚀 Start")
     markup.add(types.KeyboardButton(start_text))
     
@@ -550,10 +1103,9 @@ def set_language(message):
     }.get(lang, "Language saved!")
     
     bot.send_message(message.chat.id, confirm, reply_markup=markup)
-    
+
 @bot.message_handler(func=lambda m: m.text in ['🚀 Старт', '🚀 Бастау', '🚀 Start'])
 def start_button(message):
-    """Обработка кнопки Старт"""
     user_id = str(message.chat.id)
     lang = user_languages.get(user_id, 'ru')
     
@@ -566,6 +1118,7 @@ def start_button(message):
             "📊 Что я умею:\n"
             "• Показывать AQI и загрязнители\n"
             "• Определять источники загрязнения\n"
+            "• Показывать уровень H₂S\n"
             "• Давать рекомендации по здоровью\n\n"
             "📍 Отправьте вашу геолокацию, чтобы начать!"
         ),
@@ -575,6 +1128,7 @@ def start_button(message):
             "📊 Не істей аламын:\n"
             "• AQI және ластаушыларды көрсету\n"
             "• Ластану көздерін анықтау\n"
+            "• H₂S деңгейін көрсету\n"
             "• Денсаулық бойынша ұсыныстар беру\n\n"
             "📍 Бастау үшін геолокацияңызды жіберіңіз!"
         ),
@@ -584,6 +1138,7 @@ def start_button(message):
             "📊 What I can do:\n"
             "• Show AQI and pollutants\n"
             "• Identify pollution sources\n"
+            "• Show H₂S levels\n"
             "• Give health recommendations\n\n"
             "📍 Send your location to start!"
         )
@@ -591,24 +1146,20 @@ def start_button(message):
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     location_text = {
-        'ru': "📍 Отправить локацию",
-        'kk': "📍 Орынды жіберу",
-        'en': "📍 Send Location"
+        'ru': "📍 Отправить локацию", 'kk': "📍 Орынды жіберу", 'en': "📍 Send Location"
     }.get(lang, "📍 Send Location")
     markup.add(types.KeyboardButton(location_text, request_location=True))
     
     bot.send_message(message.chat.id, welcome_text, reply_markup=markup)
+
 @bot.message_handler(func=lambda m: m.text in ['🔄 Обновить', '🔄 Жаңарту', '🔄 Refresh'])
 def refresh_data(message):
-    """Обновление данных"""
     user_id = str(message.chat.id)
     lang = user_languages.get(user_id, 'ru')
     
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     location_text = {
-        'ru': "📍 Отправить локацию",
-        'kk': "📍 Орынды жіберу",
-        'en': "📍 Send Location"
+        'ru': "📍 Отправить локацию", 'kk': "📍 Орынды жіберу", 'en': "📍 Send Location"
     }.get(lang, "📍 Send Location")
     markup.add(types.KeyboardButton(location_text, request_location=True))
     
@@ -639,29 +1190,74 @@ def handle_location(message):
     
     bot.send_chat_action(message.chat.id, 'typing')
     
+    # 1. Качество воздуха
     air_data, source_name = get_best_air_data(lat, lon)
     weather = get_weather(lat, lon)
     
     wind_deg = weather.get('wind_deg', 0) if weather else 0
     wind_dir_text = get_wind_direction_text(wind_deg, lang)
     
-    # ИЗМЕНЕНИЕ 1: Получаем короткий анализ источников
-    ai_source_analysis = get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, lang)
+    # 2. H₂S (с кэшем)
+    print("🛢 Проверяю H₂S...", flush=True)
+    h2s_data = get_h2s_cached(lat, lon, air_data, lang)
     
+    # 3. Анализ источников через DeepSeek
+    ai_source_analysis = get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, h2s_data, lang)
+    
+    # 4. Анализ уровня загрязнения
     pollution_analysis = analyze_pollution(air_data, lang)
     
-    # ИЗМЕНЕНИЕ 2: Передаем анализ источников в рекомендации
-    recommendations = get_ai_recommendations(air_data, weather, pollution_analysis, lang, ai_source_analysis)
+    # 5. Рекомендации
+    recommendations = get_ai_recommendations(air_data, weather, pollution_analysis, lang, ai_source_analysis, h2s_data)
     
+    # 6. Формируем ответ
     response = format_full_response(
         air_data, weather, pollution_analysis,
-        recommendations, source_name, lang, ai_source_analysis
+        recommendations, source_name, lang, ai_source_analysis, h2s_data
     )
     
     safe_send_message(message.chat.id, response)
 
 # ==========================================
-# 11. ФОНОВЫЕ ЗАДАЧИ
+# 15. АДМИН-КОМАНДЫ
+# ==========================================
+
+@bot.message_handler(commands=['refresh_h2s'])
+def refresh_h2s_command(message):
+    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+    if ADMIN_ID and message.chat.id != ADMIN_ID:
+        return
+    
+    count = len(h2s_cache)
+    h2s_cache.clear()
+    save_h2s_cache()
+    
+    bot.reply_to(message, f"✅ Кэш H₂S очищен ({count} записей). Следующий запрос обновит данные.")
+
+@bot.message_handler(commands=['stats_h2s'])
+def stats_h2s(message):
+    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+    if ADMIN_ID and message.chat.id != ADMIN_ID:
+        return
+    
+    total = len(h2s_cache)
+    with_data = sum(1 for v in h2s_cache.values() if v.get('h2s'))
+    sources = {}
+    for v in h2s_cache.values():
+        src = v.get('source', 'Unknown')
+        sources[src] = sources.get(src, 0) + 1
+    
+    text = f"📊 H₂S кэш:\n"
+    text += f"• Всего записей: {total}\n"
+    text += f"• С данными: {with_data}\n"
+    text += f"• Источники:\n"
+    for src, count in sources.items():
+        text += f"  — {src}: {count}\n"
+    
+    bot.reply_to(message, text)
+
+# ==========================================
+# 16. ФОНОВЫЕ ЗАДАЧИ
 # ==========================================
 
 def background_notifier():
@@ -680,7 +1276,7 @@ def background_notifier():
                 logging.error(f"Ошибка уведомления: {e}")
 
 # ==========================================
-# 12. ЗАПУСК
+# 17. ЗАПУСК
 # ==========================================
 
 if __name__ == '__main__':
@@ -689,6 +1285,7 @@ if __name__ == '__main__':
     print(f"🔑 BOT_TOKEN: {'✅' if BOT_TOKEN and BOT_TOKEN != 'DUMMY_TOKEN' else '❌'}", flush=True)
     print(f"🤖 DEEPSEEK: {'✅' if DEEPSEEK_API_KEY else '❌'}", flush=True)
     print(f"🌤 WEATHER: {'✅' if WEATHER_API_KEY else '❌'}", flush=True)
+    print(f"🕷 PARSING: {'✅' if PARSING_AVAILABLE else '❌'}", flush=True)
     print("=" * 50, flush=True)
     
     if not BOT_TOKEN or BOT_TOKEN == "DUMMY_TOKEN":
@@ -709,6 +1306,7 @@ if __name__ == '__main__':
         pass
     
     load_user_languages()
+    load_h2s_cache()
     
     threading.Thread(target=start_health_check_server, daemon=True).start()
     threading.Thread(target=keep_alive, daemon=True).start()
