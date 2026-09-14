@@ -184,7 +184,7 @@ def parse_iqair(lat, lon):
             'Accept-Language': 'en-US,en;q=0.9',
         }
         
-        r = scraper.get(search_url, headers=headers, timeout=10)
+        r = scraper.get(search_url, headers=headers, timeout=8)
         if r.status_code != 200:
             return None
         
@@ -202,7 +202,7 @@ def parse_iqair(lat, lon):
         if not city_link.startswith('http'):
             city_link = 'https://www.iqair.com' + city_link
         
-        r = scraper.get(city_link, headers=headers, timeout=10)
+        r = scraper.get(city_link, headers=headers, timeout=8)
         if r.status_code != 200:
             return None
         
@@ -236,7 +236,7 @@ def parse_iqair(lat, lon):
             }
         return None
     except Exception as e:
-        print(f"❌ IQAir parse error: {e}", flush=True)
+        print(f"❌ IQAir: {e}", flush=True)
         return None
 
 def parse_aqicn(lat, lon):
@@ -251,7 +251,7 @@ def parse_aqicn(lat, lon):
                          'Chrome/120.0.0.0 Safari/537.36',
         }
         
-        r = scraper.get(url, headers=headers, timeout=10, allow_redirects=True)
+        r = scraper.get(url, headers=headers, timeout=8, allow_redirects=True)
         if r.status_code != 200:
             return None
         
@@ -286,22 +286,23 @@ def parse_aqicn(lat, lon):
             }
         return None
     except Exception as e:
-        print(f"❌ AQICN parse error: {e}", flush=True)
+        print(f"❌ AQICN: {e}", flush=True)
         return None
 
 def parse_airkz(lat, lon):
-    """AirKZ — Казахстан (быстрая версия с короткими таймаутами)"""
+    """AirKZ — Казахстан (исправлены домены)"""
     if not PARSING_AVAILABLE:
         return None
     try:
         urls_to_try = [
-            "https://airkz.kz/api/stations",
-            "https://airkz.kz/",
+            "https://airkaz.com",
+            "https://air.kz",
+            "https://www.airkaz.com/map",
         ]
         
         for url in urls_to_try:
             try:
-                r = scraper.get(url, timeout=5)
+                r = scraper.get(url, timeout=5, allow_redirects=True)
                 if r.status_code == 200:
                     print(f"✅ AirKZ: {url}", flush=True)
                     
@@ -320,13 +321,14 @@ def parse_airkz(lat, lon):
                     result = find_h2s_in_html(soup)
                     if result:
                         result['source'] = 'AirKZ'
+                        result['station'] = result.get('station', 'AirKZ')
                         return result
             except Exception as e:
                 print(f"⚠️ AirKZ {url}: {e}", flush=True)
                 continue
         return None
     except Exception as e:
-        print(f"❌ AirKZ parse error: {e}", flush=True)
+        print(f"❌ AirKZ: {e}", flush=True)
         return None
 
 def parse_kazhydromet(lat, lon):
@@ -342,7 +344,7 @@ def parse_kazhydromet(lat, lon):
             'Accept-Language': 'ru-RU,ru;q=0.9',
         }
         
-        r = scraper.get(url, headers=headers, timeout=10)
+        r = scraper.get(url, headers=headers, timeout=8)
         if r.status_code != 200:
             return None
         
@@ -369,7 +371,7 @@ def parse_kazhydromet(lat, lon):
                                 }
         return None
     except Exception as e:
-        print(f"❌ Казгидромет parse error: {e}", flush=True)
+        print(f"❌ Казгидромет: {e}", flush=True)
         return None
 
 def parse_airnow(lat, lon):
@@ -384,7 +386,7 @@ def parse_airnow(lat, lon):
                          'Chrome/120.0.0.0 Safari/537.36',
         }
         
-        r = scraper.get(url, headers=headers, timeout=10)
+        r = scraper.get(url, headers=headers, timeout=8)
         if r.status_code != 200:
             return None
         
@@ -403,7 +405,7 @@ def parse_airnow(lat, lon):
                     }
         return None
     except Exception as e:
-        print(f"❌ AirNow parse error: {e}", flush=True)
+        print(f"❌ AirNow: {e}", flush=True)
         return None
 
 def find_h2s_in_json(data):
@@ -458,56 +460,53 @@ def estimate_h2s_indirect(air_data):
         }
     return None
 
-def _parse_with_timeout(parser, lat, lon, timeout=15):
-    """Запуск парсера с жёстким таймаутом"""
-    result = [None]
-    exception = [None]
-    
-    def target():
-        try:
-            result[0] = parser(lat, lon)
-        except Exception as e:
-            exception[0] = e
-    
-    t = threading.Thread(target=target, daemon=True)
-    t.start()
-    t.join(timeout=timeout)
-    
-    if t.is_alive():
-        print(f"⏱ {parser.__name__}: таймаут {timeout}с", flush=True)
-        return None
-    
-    if exception[0]:
-        print(f"⚠️ {parser.__name__}: {exception[0]}", flush=True)
-        return None
-    
-    return result[0]
-
-
 def _parse_h2s_all_sources(lat, lon, air_data=None):
-    """Парсинг по всем источникам с таймаутами"""
+    """ПАРАЛЛЕЛЬНЫЙ парсинг по всем источникам"""
     if not PARSING_AVAILABLE:
         return estimate_h2s_indirect(air_data)
     
     region = detect_region(lat, lon)
     
-    # Региональные источники (10-12 сек каждый)
+    # Список парсеров в порядке приоритета
     if region == 'kz':
-        for parser in [parse_airkz, parse_kazhydromet]:
-            result = _parse_with_timeout(parser, lat, lon, timeout=10)
+        parsers = [parse_airkz, parse_kazhydromet, parse_iqair, parse_aqicn]
+    elif region == 'us':
+        parsers = [parse_airnow, parse_iqair, parse_aqicn]
+    else:
+        parsers = [parse_iqair, parse_aqicn]
+    
+    # Параллельный запуск всех парсеров
+    results = {}
+    results_lock = Lock()
+    threads = []
+    
+    def run_parser(name, parser):
+        try:
+            result = parser(lat, lon)
             if result:
-                return result
+                with results_lock:
+                    results[name] = result
+        except Exception as e:
+            print(f"⚠️ {name}: {e}", flush=True)
     
-    if region == 'us':
-        result = _parse_with_timeout(parse_airnow, lat, lon, timeout=10)
-        if result:
-            return result
+    for parser in parsers:
+        t = threading.Thread(
+            target=run_parser,
+            args=(parser.__name__, parser),
+            daemon=True
+        )
+        t.start()
+        threads.append(t)
     
-    # Глобальные источники (12 сек каждый)
-    for parser in [parse_iqair, parse_aqicn]:
-        result = _parse_with_timeout(parser, lat, lon, timeout=12)
-        if result:
-            return result
+    # Ждём максимум 12 секунд (все парсеры параллельно)
+    for t in threads:
+        t.join(timeout=12)
+    
+    # Возвращаем первый успешный результат (в порядке приоритета)
+    for parser in parsers:
+        if parser.__name__ in results:
+            print(f"✅ H₂S найден: {parser.__name__}", flush=True)
+            return results[parser.__name__]
     
     return estimate_h2s_indirect(air_data)
 
@@ -550,16 +549,12 @@ def _parse_and_cache(key, lat, lon, air_data, lang):
 
 
 def get_h2s_sync(lat, lon, air_data=None, lang='ru', timeout=30):
-    """
-    Синхронное получение H₂S с ограничением по времени.
-    Ждём парсинга, но не более timeout секунд.
-    """
+    """Синхронное получение H₂S с таймаутом"""
     if not PARSING_AVAILABLE:
         return estimate_h2s_indirect(air_data)
     
     key = get_cache_key(lat, lon)
     
-    # Свежий кэш
     if is_cache_fresh(key):
         entry = h2s_cache[key]
         try:
@@ -569,7 +564,6 @@ def get_h2s_sync(lat, lon, air_data=None, lang='ru', timeout=30):
             pass
         return entry
     
-    # Нужен парсинг — ждём с таймаутом
     print(f"🔄 H₂S: парсинг с таймаутом {timeout}с...", flush=True)
     
     result_holder = [None]
@@ -593,7 +587,6 @@ def get_h2s_sync(lat, lon, air_data=None, lang='ru', timeout=30):
         print(f"✅ H₂S готов: {result_holder[0].get('source', 'N/A')}", flush=True)
         return result_holder[0]
     
-    # Таймаут — отдаём косвенную оценку
     print(f"⏱ H₂S таймаут, отдаю косвенную оценку", flush=True)
     
     estimate = estimate_h2s_indirect(air_data)
@@ -601,7 +594,6 @@ def get_h2s_sync(lat, lon, air_data=None, lang='ru', timeout=30):
         estimate['updated'] = datetime.now().isoformat()
         estimate['source'] = estimate.get('source', 'Оценка') + ' (таймаут парсинга)'
     
-    # Сохраняем в кэш, чтобы следующий запрос не парсил снова (через 5 минут попробуем заново)
     if key not in h2s_cache:
         now = datetime.now()
         h2s_cache[key] = {
@@ -645,7 +637,7 @@ def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
         }
         
         print(f"🤖 Запрос к DeepSeek...", flush=True)
-        r = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=30)
+        r = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=25)
         
         if r.status_code == 200:
             data = r.json()
@@ -1021,7 +1013,6 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
         msg += f"• {t['humidity']}: {weather['humidity']}%\n"
         msg += f"• {t['wind']}: {get_wind_direction_text(weather['wind_deg'], lang)}, {weather['wind_speed']} м/с\n\n"
     
-    # Блок H₂S
     if h2s_data is not None:
         msg += format_h2s_block(h2s_data, lang)
     
@@ -1227,14 +1218,12 @@ def handle_location(message):
     lat = float(message.location.latitude)
     lon = float(message.location.longitude)
     
-    # Сообщения ожидания
     wait_msgs = {
         'ru': "⏳ Обрабатываю данные, ожидайте...\n\n_Обычно занимает 5-15 секунд_",
         'kk': "⏳ Деректерді өңдеп жатырмын, күте тұрыңыз...\n\n_Әдетте 5-15 секунд алады_",
         'en': "⏳ Processing data, please wait...\n\n_Usually takes 5-15 seconds_"
     }
     
-    # Шаг 1: Статусное сообщение
     try:
         status_msg = bot.send_message(
             message.chat.id,
@@ -1272,39 +1261,54 @@ def handle_location(message):
         wind_deg = weather.get('wind_deg', 0) if weather else 0
         wind_dir_text = get_wind_direction_text(wind_deg, lang)
         
-        # Шаг 3: H₂S — синхронно с таймаутом 30 сек
+        # Шаг 3: H₂S с таймаутом
         update_status({
             'ru': "🛢 Ищу данные о H₂S...\n\n_Парсинг источников_",
             'kk': "🛢 H₂S деректерін іздеймін...\n\n_Дереккөздерді талдау_",
             'en': "🛢 Searching H₂S data...\n\n_Parsing sources_"
         }.get(lang))
         
-        h2s_data = get_h2s_sync(lat, lon, air_data, lang, timeout=30)
-        
-        # Шаг 4: Анализ источников через DeepSeek
-        update_status({
-            'ru': "🤖 Анализирую источники через ИИ...",
-            'kk': "🤖 ИИ арқылы көздерді талдаймын...",
-            'en': "🤖 Analyzing sources with AI..."
-        }.get(lang))
-        
-        ai_source_analysis = get_ai_source_analysis(
-            lat, lon, wind_deg, wind_dir_text, air_data, h2s_data, lang
-        )
+        h2s_data = get_h2s_sync(lat, lon, air_data, lang, timeout=25)
         
         pollution_analysis = analyze_pollution(air_data, lang)
         
-        # Шаг 5: Рекомендации
+        # Шаг 4: ПАРАЛЛЕЛЬНЫЙ анализ источников и рекомендации
         update_status({
-            'ru': "🥗 Готовлю рекомендации...",
-            'kk': "🥗 Ұсыныстар дайындаймын...",
-            'en': "🥗 Preparing recommendations..."
+            'ru': "🤖 Анализирую данные через ИИ...\n\n_Это займёт 10-15 секунд_",
+            'kk': "🤖 Деректерді ИИ арқылы талдаймын...\n\n_10-15 секунд алады_",
+            'en': "🤖 Analyzing with AI...\n\n_Takes 10-15 seconds_"
         }.get(lang))
         
-        recommendations = get_ai_recommendations(
-            air_data, weather, pollution_analysis, lang,
-            ai_source_analysis, h2s_data
-        )
+        results = {'source': None, 'recs': None}
+        
+        def fetch_source():
+            try:
+                results['source'] = get_ai_source_analysis(
+                    lat, lon, wind_deg, wind_dir_text, air_data, h2s_data, lang
+                )
+            except Exception as e:
+                logging.error(f"Source analysis error: {e}")
+        
+        def fetch_recs():
+            try:
+                results['recs'] = get_ai_recommendations(
+                    air_data, weather, pollution_analysis, lang,
+                    None, h2s_data
+                )
+            except Exception as e:
+                logging.error(f"Recommendations error: {e}")
+        
+        t1 = threading.Thread(target=fetch_source, daemon=True)
+        t2 = threading.Thread(target=fetch_recs, daemon=True)
+        
+        t1.start()
+        t2.start()
+        
+        t1.join(timeout=25)
+        t2.join(timeout=25)
+        
+        ai_source_analysis = results['source']
+        recommendations = results['recs'] or get_rule_based_recommendations(pollution_analysis, lang)
         
         # Шаг 6: Удаляем статус и отправляем отчёт
         if status_msg_id:
