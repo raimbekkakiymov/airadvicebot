@@ -12,6 +12,7 @@ from telebot import types
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime, timedelta
 from threading import Lock
+from math import radians, sin, cos, asin, sqrt, atan2, degrees
 
 # Парсинг
 try:
@@ -24,10 +25,10 @@ try:
 except ImportError:
     PARSING_AVAILABLE = False
     scraper = None
-    print("⚠️ cloudscraper/bs4 не установлены — H₂S парсинг отключён", flush=True)
+    print("⚠️ cloudscraper/bs4 не установлены", flush=True)
 
 # ==========================================
-# AIRKZ API (kz.citysoft.airkz)
+# AIRKZ API
 # ==========================================
 
 AIRKZ_API_URL = "http://93.185.75.19:4001/"
@@ -81,13 +82,12 @@ WAQI_API_KEY = os.getenv("WAQI_API_KEY") or "demo"
 DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
 
-PID_FILE = "bot.pid"
 USER_LANG_FILE = "user_languages.json"
 H2S_CACHE_FILE = "h2s_cache.json"
 H2S_UPDATE_DAYS = 7
 
 if not BOT_TOKEN:
-    print("❌ ВНИМАНИЕ: BOT_TOKEN не установлен!", flush=True)
+    print("❌ BOT_TOKEN не установлен!", flush=True)
     BOT_TOKEN = "DUMMY_TOKEN"
 
 bot = telebot.TeleBot(BOT_TOKEN)
@@ -104,7 +104,7 @@ def load_user_languages():
         try:
             with open(USER_LANG_FILE, 'r', encoding='utf-8') as f:
                 user_languages = json.load(f)
-            print(f"✅ Загружено {len(user_languages)} языков пользователей", flush=True)
+            print(f"✅ Загружено {len(user_languages)} языков", flush=True)
         except Exception as e:
             logging.error(f"Ошибка загрузки: {e}")
 
@@ -125,9 +125,8 @@ def load_h2s_cache():
         try:
             with open(H2S_CACHE_FILE, 'r', encoding='utf-8') as f:
                 h2s_cache = json.load(f)
-            print(f"✅ Загружено {len(h2s_cache)} записей H₂S из кэша", flush=True)
+            print(f"✅ Загружено {len(h2s_cache)} записей H₂S", flush=True)
         except Exception as e:
-            logging.error(f"Ошибка загрузки H₂S кэша: {e}")
             h2s_cache = {}
 
 def save_h2s_cache():
@@ -136,7 +135,7 @@ def save_h2s_cache():
             with open(H2S_CACHE_FILE, 'w', encoding='utf-8') as f:
                 json.dump(h2s_cache, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logging.error(f"Ошибка сохранения H₂S кэша: {e}")
+        logging.error(f"Ошибка сохранения H₂S: {e}")
 
 def get_cache_key(lat, lon):
     return f"{round(lat, 2)},{round(lon, 2)}"
@@ -144,23 +143,13 @@ def get_cache_key(lat, lon):
 def is_cache_fresh(key):
     if key not in h2s_cache:
         return False
-    
     entry = h2s_cache[key]
-    
     if 'next_update' in entry:
         try:
             next_update = datetime.fromisoformat(entry['next_update'])
             return datetime.now() < next_update
         except:
             pass
-    
-    if 'updated' in entry:
-        try:
-            updated = datetime.fromisoformat(entry['updated'])
-            return datetime.now() - updated < timedelta(days=H2S_UPDATE_DAYS)
-        except:
-            pass
-    
     return False
 
 # ==========================================
@@ -172,25 +161,18 @@ def detect_region(lat, lon):
         return 'kz'
     if 24 < lat < 72 and -170 < lon < -50:
         return 'us'
-    if 35 < lat < 72 and -25 < lon < 45:
-        return 'eu'
-    if 12 < lat < 42 and 30 < lon < 65:
-        return 'me'
     return 'world'
 
 # ==========================================
-# 5. AIRKZ API ФУНКЦИИ
+# 5. AIRKZ API
 # ==========================================
 
 def airkz_get_token():
-    """Получить OAuth токен AirKZ с кэшированием"""
     global _airkz_token
-    
     with _airkz_token_lock:
         now = time.time()
         if _airkz_token["access_token"] and _airkz_token["expires_at"] > now + 60:
             return _airkz_token["access_token"]
-        
         try:
             url = f"{AIRKZ_API_URL}oauth/token"
             body = {
@@ -202,228 +184,213 @@ def airkz_get_token():
             }
             print(f"🔑 AirKZ: запрос токена...", flush=True)
             r = requests.post(url, data=body, timeout=15)
-            
             if r.status_code == 200:
                 data = r.json()
                 token = data.get("access_token")
-                expires_in = data.get("expires_in", 3600)
                 if token:
                     _airkz_token["access_token"] = token
-                    _airkz_token["expires_at"] = now + expires_in
-                    print(f"✅ AirKZ: токен получен ({expires_in} сек)", flush=True)
+                    _airkz_token["expires_at"] = now + data.get("expires_in", 3600)
+                    print(f"✅ AirKZ: токен получен", flush=True)
                     return token
-            else:
-                print(f"❌ AirKZ auth {r.status_code}: {r.text[:200]}", flush=True)
         except Exception as e:
             print(f"❌ AirKZ auth: {e}", flush=True)
-        
         return None
 
-
-def airkz_extract_h2s_from_json(data, target_lat=None, target_lon=None):
-    """Рекурсивный поиск H2S в JSON-ответе AirKZ"""
+def airkz_extract_h2s_from_json(data):
     found = []
-    
-    def walk(obj, path=""):
+    def walk(obj):
         if isinstance(obj, dict):
             for key, val in obj.items():
                 k_low = str(key).lower()
-                if k_low in ("h2s", "h_2_s", "hydrogen_sulfide", "сероводород", "h2svalue", "h2s_value"):
+                if k_low in ("h2s", "h_2_s", "h2svalue"):
                     if isinstance(val, (int, float)):
-                        found.append({"value": val, "path": path + "." + key, "obj": obj})
+                        found.append({"value": val})
                     elif isinstance(val, dict):
-                        v = val.get("value") or val.get("v") or val.get("val")
+                        v = val.get("value") or val.get("v")
                         if v is not None:
-                            found.append({"value": v, "path": path + "." + key, "obj": obj})
+                            found.append({"value": v})
                     elif isinstance(val, str):
                         try:
-                            found.append({"value": float(val.replace(",", ".")), "path": path + "." + key, "obj": obj})
+                            found.append({"value": float(val.replace(",", "."))})
                         except:
                             pass
-                walk(val, path + "." + key)
+                walk(val)
         elif isinstance(obj, list):
-            for i, item in enumerate(obj):
-                walk(item, f"{path}[{i}]")
-    
+            for item in obj:
+                walk(item)
     walk(data)
     return found
 
-
 def airkz_get_h2s(lat, lon):
-    """Получить H2S через AirKZ API"""
     token = airkz_get_token()
     if not token:
         return None
-    
     headers = {"Authorization": f"Bearer {token}"}
-    
-    # Пробуем разные endpoints
     endpoints = [
         f"api/station/nearest?lat={lat}&lon={lon}",
-        f"api/station/nearest/{lat}/{lon}",
-        f"api/station/nearest?latitude={lat}&longitude={lon}",
-        f"api/station/list?lat={lat}&lon={lon}",
         f"api/station/list",
-        f"api/stations?lat={lat}&lon={lon}",
         f"api/stations",
-        f"api/average/station/nearest?lat={lat}&lon={lon}",
-        f"api/averages/station/nearest?lat={lat}&lon={lon}",
-        f"api/averages?lat={lat}&lon={lon}",
-        f"api/air/station/nearest?lat={lat}&lon={lon}",
-        f"api/v1/station/nearest?lat={lat}&lon={lon}",
-        f"api/v1/stations?lat={lat}&lon={lon}",
+        f"api/averages",
         f"api/v1/stations",
-        f"api/data/station/nearest?lat={lat}&lon={lon}",
-        f"api/measurements?lat={lat}&lon={lon}",
-        f"api/measurement/nearest?lat={lat}&lon={lon}",
-        f"api/pollution/station/nearest?lat={lat}&lon={lon}",
     ]
-    
     for endpoint in endpoints:
         try:
-            url = f"{AIRKZ_API_URL}{endpoint}"
-            r = requests.get(url, headers=headers, timeout=10)
-            
+            r = requests.get(f"{AIRKZ_API_URL}{endpoint}", headers=headers, timeout=10)
             if r.status_code == 200:
-                try:
-                    data = r.json()
-                    h2s_list = airkz_extract_h2s_from_json(data)
-                    
-                    if h2s_list:
-                        item = h2s_list[0]
-                        try:
-                            h2s_val = float(item["value"])
-                        except:
-                            h2s_val = item["value"]
-                        
-                        print(f"✅ AirKZ API: H2S={h2s_val} (endpoint: {endpoint})", flush=True)
-                        
-                        station_name = "AirKZ"
-                        if isinstance(item.get("obj"), dict):
-                            station_name = (
-                                item["obj"].get("stationName") or 
-                                item["obj"].get("name") or 
-                                item["obj"].get("station") or 
-                                "AirKZ"
-                            )
-                        
-                        return {
-                            "h2s": h2s_val,
-                            "unit": "mg/m3",
-                            "source": "AirKZ API",
-                            "station": station_name
-                        }
-                    else:
-                        print(f"⚠️ AirKZ: {endpoint} OK но H2S нет в ответе", flush=True)
-                except Exception as e:
-                    print(f"⚠️ AirKZ parse {endpoint}: {e}", flush=True)
-            elif r.status_code not in (404, 401):
-                print(f"⚠️ AirKZ {endpoint}: {r.status_code}", flush=True)
-        except Exception as e:
+                data = r.json()
+                h2s_list = airkz_extract_h2s_from_json(data)
+                if h2s_list:
+                    val = h2s_list[0]["value"]
+                    print(f"✅ AirKZ: H2S={val}", flush=True)
+                    return {
+                        "h2s": val,
+                        "unit": "mg/m3",
+                        "source": "AirKZ API",
+                        "station": "AirKZ"
+                    }
+        except:
             continue
-    
-    print(f"❌ AirKZ API: H2S не найден", flush=True)
     return None
 
-
-def airkz_diagnostic():
-    """Диагностика AirKZ API — возвращает отчёт"""
-    report = []
-    
-    # Тест 1: Авторизация
-    report.append("🔑 Шаг 1: Авторизация")
-    token = airkz_get_token()
-    if not token:
-        report.append("❌ Токен НЕ получен")
-        return "\n".join(report)
-    
-    report.append(f"✅ Токен получен: {token[:30]}...")
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    # Тест 2: Endpoints
-    report.append("\n📡 Шаг 2: Поиск endpoints")
-    
-    test_eps = [
-        "api/station/nearest?lat=47.09&lon=51.92",
-        "api/station/list",
-        "api/stations",
-        "api/averages",
-        "api/data",
-        "api/v1/stations",
-        "api/station/nearest/47.09/51.92",
-        "api/measurements",
-    ]
-    
-    for ep in test_eps:
-        try:
-            r = requests.get(f"{AIRKZ_API_URL}{ep}", headers=headers, timeout=8)
-            status_emoji = "✅" if r.status_code == 200 else "❌"
-            preview = r.text[:80].replace("\n", " ")
-            report.append(f"{status_emoji} {ep} → {r.status_code}")
-            if r.status_code == 200:
-                report.append(f"   📄 {preview}")
-        except Exception as e:
-            report.append(f"❌ {ep} → {str(e)[:50]}")
-    
-    return "\n".join(report)
-
 # ==========================================
-# 6. ПАРСЕРЫ H₂S (fallback)
+# 6. OVERPASS API (ОБЪЕКТЫ НА ВЕТРУ) ⭐ НОВОЕ
 # ==========================================
 
-def parse_iqair(lat, lon):
-    if not PARSING_AVAILABLE:
-        return None
+def calculate_distance_bearing(lat1, lon1, lat2, lon2):
+    """Расстояние (км) и азимут (°) от точки 1 к точке 2"""
+    R = 6371
+    dlat = radians(lat2 - lat1)
+    dlon = radians(lon2 - lon1)
+    a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon/2)**2
+    distance = 2 * R * asin(sqrt(a))
+    
+    y = sin(dlon) * cos(radians(lat2))
+    x = cos(radians(lat1)) * sin(radians(lat2)) - sin(radians(lat1)) * cos(radians(lat2)) * cos(dlon)
+    bearing = (degrees(atan2(y, x)) + 360) % 360
+    
+    return distance, bearing
+
+
+def _determine_type(tags):
+    """Определяет тип объекта по OSM-тегам"""
+    if tags.get("landuse") == "landfill":
+        return "Полигон ТБО (свалка)"
+    if tags.get("industrial") == "waste_incinerator":
+        return "Мусоросжигательный завод"
+    if tags.get("power") == "plant":
+        fuel = tags.get("plant:source", "")
+        if "coal" in fuel:
+            return "Угольная ТЭЦ"
+        if "gas" in fuel:
+            return "Газовая ТЭЦ"
+        return "Электростанция/ТЭЦ"
+    if tags.get("man_made") == "works":
+        product = tags.get("product", "")
+        if "oil" in product:
+            return "НПЗ"
+        if "chemical" in product:
+            return "Химзавод"
+        if "steel" in product or "metal" in product:
+            return "Металлургический завод"
+        return "Промышленный завод"
+    if tags.get("landuse") == "industrial":
+        return "Промзона"
+    if tags.get("aeroway") == "aerodrome":
+        return "Аэропорт"
+    if tags.get("landuse") == "quarry":
+        return "Карьер"
+    return "Промышленный объект"
+
+
+def find_industrial_objects(lat, lon, radius_km=10):
+    """Поиск промышленных объектов через OpenStreetMap"""
     try:
-        search_url = f"https://www.iqair.com/search?q={lat},{lon}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-        }
-        r = scraper.get(search_url, headers=headers, timeout=8)
+        radius_m = radius_km * 1000
+        
+        query = f"""
+        [out:json][timeout:30];
+        (
+          node["man_made"="works"](around:{radius_m},{lat},{lon});
+          way["man_made"="works"](around:{radius_m},{lat},{lon});
+          node["landuse"="landfill"](around:{radius_m},{lat},{lon});
+          way["landuse"="landfill"](around:{radius_m},{lat},{lon});
+          node["power"="plant"](around:{radius_m},{lat},{lon});
+          way["power"="plant"](around:{radius_m},{lat},{lon});
+          node["landuse"="industrial"](around:{radius_m},{lat},{lon});
+          way["landuse"="industrial"](around:{radius_m},{lat},{lon});
+          node["aeroway"="aerodrome"](around:{radius_m},{lat},{lon});
+          way["aeroway"="aerodrome"](around:{radius_m},{lat},{lon});
+          node["industrial"="waste_incinerator"](around:{radius_m},{lat},{lon});
+          node["landuse"="quarry"](around:{radius_m},{lat},{lon});
+          way["landuse"="quarry"](around:{radius_m},{lat},{lon});
+        );
+        out center tags;
+        """
+        
+        print(f"🔍 Overpass: ищу объекты в {radius_km} км...", flush=True)
+        r = requests.post(
+            "https://overpass-api.de/api/interpreter",
+            data={"data": query},
+            timeout=40,
+            headers={"User-Agent": "AirQualityBot/1.0"}
+        )
+        
         if r.status_code != 200:
-            return None
-        soup = BeautifulSoup(r.text, 'lxml')
-        city_link = None
-        for a in soup.find_all('a', href=True):
-            if '/world-air-quality' in a['href'] or '/air-quality' in a['href']:
-                city_link = a['href']
-                break
-        if not city_link:
-            return None
-        if not city_link.startswith('http'):
-            city_link = 'https://www.iqair.com' + city_link
-        r = scraper.get(city_link, headers=headers, timeout=8)
-        if r.status_code != 200:
-            return None
-        soup = BeautifulSoup(r.text, 'lxml')
-        for row in soup.find_all('tr'):
-            text = row.get_text().lower()
-            if 'h2s' in text or 'hydrogen sulfide' in text:
-                cells = row.find_all(['td', 'th'])
-                for cell in cells:
-                    match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb|ppm)', cell.get_text())
-                    if match:
-                        return {
-                            'h2s': match.group(1).replace(',', '.'),
-                            'unit': match.group(2),
-                            'source': 'IQAir',
-                            'station': 'IQAir'
-                        }
-        return None
+            print(f"⚠️ Overpass {r.status_code}", flush=True)
+            return []
+        
+        data = r.json()
+        objects = []
+        
+        for elem in data.get("elements", []):
+            obj_lat = elem.get("lat") or elem.get("center", {}).get("lat")
+            obj_lon = elem.get("lon") or elem.get("center", {}).get("lon")
+            if not obj_lat or not obj_lon:
+                continue
+            
+            tags = elem.get("tags", {})
+            obj_type = _determine_type(tags)
+            name = tags.get("name") or tags.get("name:ru") or tags.get("name:en") or obj_type
+            
+            distance, bearing = calculate_distance_bearing(lat, lon, obj_lat, obj_lon)
+            
+            objects.append({
+                "name": name,
+                "type": obj_type,
+                "distance_km": round(distance, 1),
+                "bearing": round(bearing),
+                "lat": obj_lat,
+                "lon": obj_lon
+            })
+        
+        print(f"✅ Overpass: найдено {len(objects)} объектов", flush=True)
+        return objects
     except Exception as e:
-        print(f"❌ IQAir: {e}", flush=True)
-        return None
+        print(f"❌ Overpass: {e}", flush=True)
+        return []
 
+
+def filter_on_wind(objects, wind_deg, tolerance=45):
+    """Фильтр: объекты на стороне ветра (±tolerance°)"""
+    result = []
+    for obj in objects:
+        diff = abs(obj['bearing'] - wind_deg)
+        if diff > 180:
+            diff = 360 - diff
+        if diff <= tolerance:
+            result.append(obj)
+    return sorted(result, key=lambda x: x['distance_km'])
+
+# ==========================================
+# 7. ПАРСЕРЫ H₂S (fallback)
+# ==========================================
 
 def parse_kazhydromet(lat, lon):
     if not PARSING_AVAILABLE:
         return None
     try:
         url = "https://www.kazhydromet.kz/ru/ecology/monitoring"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
-            'Accept-Language': 'ru-RU,ru;q=0.9',
-        }
+        headers = {'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0'}
         r = scraper.get(url, headers=headers, timeout=8)
         if r.status_code != 200:
             return None
@@ -431,154 +398,100 @@ def parse_kazhydromet(lat, lon):
         for table in soup.find_all('table'):
             table_text = table.get_text().lower()
             if 'сероводород' in table_text or 'h2s' in table_text:
-                rows = table.find_all('tr')
-                for row in rows:
+                for row in table.find_all('tr'):
                     cells = row.find_all(['td', 'th'])
                     if len(cells) >= 2:
                         city = cells[0].get_text(strip=True)
                         for cell in cells[1:]:
-                            cell_text = cell.get_text(strip=True)
-                            if re.search(r'[\d.,]+', cell_text):
+                            ct = cell.get_text(strip=True)
+                            if re.search(r'[\d.,]+', ct):
                                 return {
-                                    'h2s': cell_text,
-                                    'unit': 'mg/m³',
-                                    'source': 'Казгидромет',
-                                    'station': city
+                                    'h2s': ct, 'unit': 'mg/m³',
+                                    'source': 'Казгидромет', 'station': city
                                 }
         return None
-    except Exception as e:
-        print(f"❌ Казгидромет: {e}", flush=True)
+    except:
         return None
 
 
-def parse_airkz(lat, lon):
-    """Парсинг airkaz.org (сайт)"""
+def parse_iqair(lat, lon):
     if not PARSING_AVAILABLE:
         return None
     try:
-        urls_to_try = [
-            "https://www.airkaz.org/",
-            "https://airkaz.org/",
-        ]
-        for url in urls_to_try:
-            try:
-                r = scraper.get(url, timeout=5, allow_redirects=True)
-                if r.status_code == 200:
-                    soup = BeautifulSoup(r.text, 'lxml')
-                    for elem in soup.find_all(string=re.compile(r'h2s|сероводород|hydrogen sulfide', re.I)):
-                        parent = elem.find_parent()
-                        if parent:
-                            match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb|ppm)', parent.get_text())
-                            if match:
-                                return {
-                                    'h2s': match.group(1).replace(',', '.'),
-                                    'unit': match.group(2),
-                                    'source': 'AirKZ (сайт)',
-                                    'station': 'AirKZ'
-                                }
-            except Exception as e:
-                continue
+        url = f"https://www.iqair.com/search?q={lat},{lon}"
+        headers = {'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0'}
+        r = scraper.get(url, headers=headers, timeout=8)
+        if r.status_code != 200:
+            return None
+        soup = BeautifulSoup(r.text, 'lxml')
+        for a in soup.find_all('a', href=True):
+            if '/world-air-quality' in a['href']:
+                link = a['href']
+                if not link.startswith('http'):
+                    link = 'https://www.iqair.com' + link
+                r = scraper.get(link, headers=headers, timeout=8)
+                soup = BeautifulSoup(r.text, 'lxml')
+                for row in soup.find_all('tr'):
+                    text = row.get_text().lower()
+                    if 'h2s' in text or 'hydrogen sulfide' in text:
+                        match = re.search(r'([\d.,]+)\s*(µg/m³|mg/m³|ppb|ppm)', row.get_text())
+                        if match:
+                            return {
+                                'h2s': match.group(1).replace(',', '.'),
+                                'unit': match.group(2),
+                                'source': 'IQAir', 'station': 'IQAir'
+                            }
         return None
-    except Exception as e:
+    except:
         return None
 
 
 def estimate_h2s_indirect(air_data):
-    """Косвенная оценка H2S по SO2"""
     if not air_data:
         return None
     so2 = air_data.get('so2')
     if not isinstance(so2, (int, float)):
         return None
     if so2 > 50:
-        return {
-            'h2s': 'Повышен (косвенно)',
-            'unit': f'SO2={so2} µg/m³',
-            'source': 'Оценка по SO2',
-            'station': 'косвенная оценка'
-        }
+        return {'h2s': 'Повышен (косвенно)', 'unit': f'SO2={so2} µg/m³',
+                'source': 'Оценка по SO2', 'station': 'косвенно'}
     elif so2 > 20:
-        return {
-            'h2s': 'Умеренный (косвенно)',
-            'unit': f'SO2={so2} µg/m³',
-            'source': 'Оценка по SO2',
-            'station': 'косвенная оценка'
-        }
+        return {'h2s': 'Умеренный (косвенно)', 'unit': f'SO2={so2} µg/m³',
+                'source': 'Оценка по SO2', 'station': 'косвенно'}
     return None
 
 
 def _parse_with_timeout(parser, lat, lon, timeout=15):
-    """Запуск парсера с таймаутом"""
     result = [None]
-    exception = [None]
-    
     def target():
         try:
             result[0] = parser(lat, lon)
-        except Exception as e:
-            exception[0] = e
-    
+        except:
+            pass
     t = threading.Thread(target=target, daemon=True)
     t.start()
     t.join(timeout=timeout)
-    
-    if t.is_alive():
-        print(f"⏱ {parser.__name__}: таймаут {timeout}с", flush=True)
-        return None
-    
-    if exception[0]:
-        print(f"⚠️ {parser.__name__}: {exception[0]}", flush=True)
-        return None
-    
-    return result[0]
+    return result[0] if not t.is_alive() else None
 
 
 def _parse_h2s_all_sources(lat, lon, air_data=None):
-    """Приоритет: AirKZ API → парсеры сайтов → оценка"""
     region = detect_region(lat, lon)
     
-    # ═══ 1. AIRKZ API (для Казахстана) ═══
     if region == 'kz':
         try:
             result = _parse_with_timeout(airkz_get_h2s, lat, lon, timeout=20)
             if result:
                 return result
-        except Exception as e:
-            print(f"⚠️ AirKZ API: {e}", flush=True)
+        except:
+            pass
     
-    # ═══ 2. Парсеры сайтов ═══
     if PARSING_AVAILABLE:
-        if region == 'kz':
-            parsers = [parse_airkz, parse_kazhydromet, parse_iqair]
-        else:
-            parsers = [parse_iqair]
-        
-        results = {}
-        results_lock = Lock()
-        threads = []
-        
-        def run_parser(name, parser):
-            try:
-                r = parser(lat, lon)
-                if r:
-                    with results_lock:
-                        results[name] = r
-            except Exception as e:
-                print(f"⚠️ {name}: {e}", flush=True)
-        
-        for parser in parsers:
-            t = threading.Thread(target=run_parser, args=(parser.__name__, parser), daemon=True)
-            t.start()
-            threads.append(t)
-        
-        for t in threads:
-            t.join(timeout=12)
-        
-        for parser in parsers:
-            if parser.__name__ in results:
-                return results[parser.__name__]
+        parsers = [parse_kazhydromet, parse_iqair] if region == 'kz' else [parse_iqair]
+        for p in parsers:
+            result = _parse_with_timeout(p, lat, lon, timeout=10)
+            if result:
+                return result
     
-    # ═══ 3. Косвенная оценка ═══
     return estimate_h2s_indirect(air_data)
 
 
@@ -595,89 +508,47 @@ def _parse_and_cache(key, lat, lon, air_data, lang):
                 'station': result.get('station', 'Unknown'),
                 'updated': now.isoformat(),
                 'next_update': (now + timedelta(days=H2S_UPDATE_DAYS)).isoformat(),
-                'failures': 0
             }
-            print(f"✅ H₂S сохранён: {result['source']}", flush=True)
         else:
-            failures = h2s_cache.get(key, {}).get('failures', 0) + 1
             h2s_cache[key] = {
-                'h2s': None,
-                'unit': None,
-                'source': 'Нет данных',
-                'station': None,
+                'h2s': None, 'unit': None,
+                'source': 'Нет данных', 'station': None,
                 'updated': now.isoformat(),
                 'next_update': (now + timedelta(days=H2S_UPDATE_DAYS)).isoformat(),
-                'failures': failures
             }
-            print(f"⚠️ H₂S не найден (попытка {failures})", flush=True)
-        
         save_h2s_cache()
         return h2s_cache.get(key)
     except Exception as e:
-        logging.error(f"Ошибка парсинга H₂S: {e}")
+        logging.error(f"H₂S: {e}")
         return None
 
 
 def get_h2s_sync(lat, lon, air_data=None, lang='ru', timeout=30):
-    if not PARSING_AVAILABLE and detect_region(lat, lon) != 'kz':
-        return estimate_h2s_indirect(air_data)
-    
     key = get_cache_key(lat, lon)
-    
     if is_cache_fresh(key):
-        entry = h2s_cache[key]
-        try:
-            age_days = (datetime.now() - datetime.fromisoformat(entry['updated'])).days
-            print(f"📦 H₂S из кэша (возраст: {age_days} дн.)", flush=True)
-        except:
-            pass
-        return entry
+        print(f"📦 H₂S из кэша", flush=True)
+        return h2s_cache[key]
     
-    print(f"🔄 H₂S: парсинг с таймаутом {timeout}с...", flush=True)
-    
+    print(f"🔄 H₂S парсинг...", flush=True)
     result_holder = [None]
-    done_event = threading.Event()
+    done = threading.Event()
     
-    def parse_worker():
+    def worker():
         try:
             result_holder[0] = _parse_and_cache(key, lat, lon, air_data, lang)
-        except Exception as e:
-            logging.error(f"H₂S parse error: {e}")
         finally:
-            done_event.set()
+            done.set()
     
-    worker = threading.Thread(target=parse_worker, daemon=True)
-    worker.start()
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    done.wait(timeout=timeout)
     
-    finished = done_event.wait(timeout=timeout)
-    
-    if finished and result_holder[0]:
+    if result_holder[0]:
         return result_holder[0]
-    
-    print(f"⏱ H₂S таймаут", flush=True)
-    
-    estimate = estimate_h2s_indirect(air_data)
-    if estimate:
-        estimate['updated'] = datetime.now().isoformat()
-        estimate['source'] = estimate.get('source', 'Оценка') + ' (таймаут)'
-    
-    if key not in h2s_cache:
-        now = datetime.now()
-        h2s_cache[key] = {
-            'h2s': estimate.get('h2s') if estimate else None,
-            'unit': estimate.get('unit') if estimate else None,
-            'source': 'Таймаут — нужен повторный парсинг',
-            'station': None,
-            'updated': now.isoformat(),
-            'next_update': (now + timedelta(minutes=5)).isoformat(),
-            'failures': 0
-        }
-        save_h2s_cache()
-    
-    return estimate
+    return estimate_h2s_indirect(air_data)
 
 # ==========================================
-# 7. DEEPSEEK API
+# 8. DEEPSEEK API
 # ==========================================
 
 def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
@@ -700,21 +571,20 @@ def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
             "max_tokens": max_tokens
         }
         
-        print(f"🤖 Запрос к DeepSeek...", flush=True)
+        print(f"🤖 DeepSeek запрос...", flush=True)
         r = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=25)
         
         if r.status_code == 200:
             data = r.json()
             if 'choices' in data and data['choices']:
+                print(f"✅ DeepSeek ответил", flush=True)
                 return data['choices'][0]['message']['content']
-        else:
-            print(f"❌ DeepSeek error {r.status_code}", flush=True)
     except Exception as e:
         print(f"❌ DeepSeek: {e}", flush=True)
     return None
 
 # ==========================================
-# 8. МАТЕМАТИКА
+# 9. МАТЕМАТИКА / ПОГОДА
 # ==========================================
 
 def get_wind_direction_text(deg, lang='ru'):
@@ -729,10 +599,6 @@ def get_wind_direction_text(deg, lang='ru'):
     index = round(deg / 45) % 8
     return directions.get(lang, directions['ru'])[index]
 
-# ==========================================
-# 9. ВНЕШНИЕ API
-# ==========================================
-
 def get_weather(lat, lon):
     if not WEATHER_API_KEY:
         return None
@@ -746,20 +612,17 @@ def get_weather(lat, lon):
                 'humidity': data['main']['humidity'],
                 'wind_speed': data['wind']['speed'],
                 'wind_deg': data['wind'].get('deg', 0),
-                'description': data['weather'][0]['description']
             }
     except Exception as e:
-        logging.error(f"Weather error: {e}")
+        logging.error(f"Weather: {e}")
     return None
 
 def get_best_air_data(lat, lon):
     try:
-        token = WAQI_API_KEY or "demo"
-        url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={token}"
+        url = f"https://api.waqi.info/feed/geo:{lat};{lon}/?token={WAQI_API_KEY}"
         r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
         data = r.json()
-        
-        if data.get('status') == 'ok' and data.get('data'):
+        if data.get('status') == 'ok':
             iaqi = data['data'].get('iaqi', {})
             result = {
                 'aqi': data['data'].get('aqi'),
@@ -774,20 +637,15 @@ def get_best_air_data(lat, lon):
             if result.get('aqi') or result.get('pm25'):
                 return result, "WAQI"
     except Exception as e:
-        logging.error(f"WAQI error: {e}")
+        logging.error(f"WAQI: {e}")
     return None, "None"
 
 def calculate_aqi_from_pm25(pm25):
-    if pm25 <= 12:
-        return round((50 / 12) * pm25)
-    elif pm25 <= 35.4:
-        return round(((100 - 51) / (35.4 - 12.1)) * (pm25 - 12.1) + 51)
-    elif pm25 <= 55.4:
-        return round(((150 - 101) / (55.4 - 35.5)) * (pm25 - 35.5) + 101)
-    elif pm25 <= 150.4:
-        return round(((200 - 151) / (150.4 - 55.5)) * (pm25 - 55.5) + 151)
-    else:
-        return 200
+    if pm25 <= 12: return round((50 / 12) * pm25)
+    elif pm25 <= 35.4: return round(((100 - 51) / (35.4 - 12.1)) * (pm25 - 12.1) + 51)
+    elif pm25 <= 55.4: return round(((150 - 101) / (55.4 - 35.5)) * (pm25 - 35.5) + 101)
+    elif pm25 <= 150.4: return round(((200 - 151) / (150.4 - 55.5)) * (pm25 - 55.5) + 151)
+    return 200
 
 # ==========================================
 # 10. АНАЛИЗ
@@ -801,137 +659,134 @@ def analyze_pollution(air_data, lang='ru'):
         aqi = calculate_aqi_from_pm25(pm25)
     
     levels = {
-        'ru': {1: "Чистый воздух", 2: "Умеренное качество", 3: "Вредно для чувствительных групп",
+        'ru': {1: "Чистый воздух", 2: "Умеренное качество", 3: "Вредно для чувствительных",
                4: "Вредный уровень", 5: "Опасный уровень"},
         'kk': {1: "Таза ауа", 2: "Орташа сапа", 3: "Сезімтал топтар үшін зиянды",
                4: "Зиянды деңгей", 5: "Қауіпті деңгей"},
-        'en': {1: "Clean air", 2: "Moderate quality", 3: "Unhealthy for sensitive groups",
-               4: "Unhealthy level", 5: "Hazardous level"}
+        'en': {1: "Clean air", 2: "Moderate quality", 3: "Unhealthy for sensitive",
+               4: "Unhealthy level", 5: "Hazardous"}
     }
     
     t = levels.get(lang, levels['ru'])
     
     if aqi:
-        if aqi <= 50:
-            return {'level_str': t[1], 'level_code': 1}
-        elif aqi <= 100:
-            return {'level_str': t[2], 'level_code': 2}
-        elif aqi <= 150:
-            return {'level_str': t[3], 'level_code': 3}
-        elif aqi <= 200:
-            return {'level_str': t[4], 'level_code': 4}
-        else:
-            return {'level_str': t[5], 'level_code': 5}
-    
+        if aqi <= 50: return {'level_str': t[1], 'level_code': 1}
+        elif aqi <= 100: return {'level_str': t[2], 'level_code': 2}
+        elif aqi <= 150: return {'level_str': t[3], 'level_code': 3}
+        elif aqi <= 200: return {'level_str': t[4], 'level_code': 4}
+        else: return {'level_str': t[5], 'level_code': 5}
     return {'level_str': t[1], 'level_code': 1}
 
 # ==========================================
-# 11. DEEPSEEK АНАЛИЗ ИСТОЧНИКОВ
+# 11. ⭐ НОВЫЙ ЕДИНЫЙ ПРОМПТ (анализ + рекомендации)
 # ==========================================
 
-def get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, h2s_data, lang='ru'):
+def get_ai_analysis(lat, lon, wind_deg, wind_dir_text, wind_speed,
+                    air_data, weather, h2s_data, objects_on_wind, lang='ru'):
+    """
+    Логика: Объект на ветру → тип объекта → вещества → рекомендации
+    """
     if not DEEPSEEK_API_KEY:
         return None
     
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
-    aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
-    pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
-    so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
-    no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
+    # WAQI данные
+    aqi = air_data.get('aqi', '—') if air_data else '—'
+    pm25 = air_data.get('pm25', '—') if air_data else '—'
+    pm10 = air_data.get('pm10', '—') if air_data else '—'
+    no2 = air_data.get('no2', '—') if air_data else '—'
+    so2 = air_data.get('so2', '—') if air_data else '—'
+    temp = weather.get('temp', '—') if weather else '—'
     
-    h2s_info = ""
-    if h2s_data and h2s_data.get('h2s'):
-        h2s_info = f"• H₂S: {h2s_data['h2s']} {h2s_data.get('unit', '')} (источник: {h2s_data.get('source', 'N/A')})\n"
+    h2s_value = h2s_data.get('h2s', '—') if h2s_data and h2s_data.get('h2s') else '—'
+    h2s_unit = h2s_data.get('unit', '') if h2s_data else ''
     
-    prompt = (
-        f"Ты эксперт по экологии. ОТВЕЧАЙ КОРОТКО (2-3 предложения).\n\n"
-        f"Данные: AQI={aqi}, PM2.5={pm25}, SO2={so2}, NO2={no2}\n"
-        f"{h2s_info}"
-        f"Ветер: {wind_dir_text}\n"
-        f"Координаты: {lat}, {lon}\n\n"
-        f"ФОРМАТ (строго):\n"
-        f"🏭 Источники: [1-2 вероятных источника]\n"
-        f"⚠️ Элементы: [2-3 элемента]\n\n"
-        f"Язык: {lang_name}"
-    )
+    # Объекты на ветру — ГЛАВНОЕ
+    if objects_on_wind:
+        obj_lines = []
+        for obj in objects_on_wind[:5]:
+            obj_lines.append(
+                f"• {obj['name']} ({obj['type']}) — {obj['distance_km']} км, азимут {obj['bearing']}°"
+            )
+        objects_text = "\n".join(obj_lines)
+    else:
+        objects_text = "нет промышленных объектов на ветру в радиусе 10 км"
     
-    system_prompt = f"Отвечай кратко, без лишних слов. Язык: {lang_name}"
-    return call_deepseek(prompt, system_prompt, max_tokens=250, temperature=0.3)
+    prompt = f"""Ты эколог. Язык: {lang_name}.
+
+ПОЛЬЗОВАТЕЛЬ: {lat}, {lon}
+ВЕТЕР С: {wind_dir_text} ({wind_deg}°), {wind_speed} м/с
+
+ОБЪЕКТЫ НА СТОРОНЕ ВЕТРА (источник загрязнений):
+{objects_text}
+
+ДАННЫЕ WAQI:
+AQI: {aqi} | PM2.5: {pm25} | PM10: {pm10} | NO2: {no2} | SO2: {so2}
+H2S: {h2s_value} {h2s_unit}
+Температура: {temp}°C
+
+ЗАДАЧА:
+1. ВАЖНО: Датчики WAQI могут не стоять рядом с объектом,
+   но выбросы от объектов на ветру ВСЕГДА летят к пользователю.
+
+2. Для каждого объекта на ветру (из списка выше):
+   - Назови тип (НПЗ, ТЭЦ, полигон ТБО, химзавод и т.д.)
+   - Укажи какие ВЕЩЕСТВА типичны для такого типа:
+     • НПЗ → H₂S, аммиак, бензол, SO₂, NO₂, углеводороды
+     • Полигон ТБО → метан, H₂S, тяжёлые металлы, PM2.5
+     • ТЭЦ → SO₂, NO₂, зола, PM2.5, PM10
+     • Химзавод → NO₂, аммиак, органика
+     • Мусоросжигатель → диоксины, металлы, PM2.5
+   - Пиши "возможны", "вероятны" — не утверждай факты о выбросах
+
+3. Сопоставь с WAQI:
+   - Если SO2 высокий и рядом ТЭЦ/НПЗ → подтверждение
+   - Если данные в норме, но объект есть → "датчики могут не улавливать"
+
+4. Дай 4 короткие рекомендации (1 строка каждая):
+   • Выход: да/нет/ограниченно
+   • Окна: открыть/закрыть
+   • Питание: 3 продукта
+   • Витамины: 2 добавки
+
+ФОРМАТ ОТВЕТА (строго):
+🏭 На ветру: [объект + тип + расстояние]
+⚠️ Возможны: [вещества с "возможны"]
+📊 С учётом WAQI: [соответствие или расхождение]
+📋 Рекомендации: [4 короткие строки]
+💡 Вывод: [1 строка]
+
+ВАЖНО:
+- Не пиши общие фразы ("транспорт", "предприятия")
+- Используй ТОЛЬКО объекты из списка выше
+- Если объектов нет — скажи "промышленных источников на ветру не обнаружено"
+- Будь краток: 10-12 строк максимум
+"""
+    
+    system_prompt = f"Эколог. Язык: {lang_name}. Кратко, по делу."
+    return call_deepseek(prompt, system_prompt, max_tokens=700, temperature=0.3)
 
 # ==========================================
-# 12. DEEPSEEK РЕКОМЕНДАЦИИ
+# 12. Rule-based fallback
 # ==========================================
-
-def get_ai_recommendations(air_data, weather, pollution_analysis, lang='ru', source_analysis=None, h2s_data=None):
-    if not DEEPSEEK_API_KEY:
-        return get_rule_based_recommendations(pollution_analysis, lang)
-    
-    wind_dir = get_wind_direction_text(weather['wind_deg'], lang) if weather else 'N/A'
-    lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
-    
-    aqi = air_data.get('aqi', 'N/A') if air_data else 'N/A'
-    pm25 = air_data.get('pm25', 'N/A') if air_data else 'N/A'
-    so2 = air_data.get('so2', 'N/A') if air_data else 'N/A'
-    no2 = air_data.get('no2', 'N/A') if air_data else 'N/A'
-    temp = weather.get('temp', 'N/A') if weather else 'N/A'
-    
-    h2s_info = ""
-    if h2s_data and h2s_data.get('h2s'):
-        h2s_info = f"• H₂S: {h2s_data['h2s']} {h2s_data.get('unit', '')}\n"
-    
-    prompt = f"""Ты эксперт по нутрициологии и здоровью.
-
-ВОЗДУХ: AQI={aqi}, PM2.5={pm25}, SO2={so2}, NO2={no2}
-{h2s_info}ПОГОДА: {temp}°C, ветер {wind_dir}
-
-АНАЛИЗ ИСТОЧНИКОВ: {source_analysis if source_analysis else 'Нет данных'}
-
-ДАЙ РЕКОМЕНДАЦИИ:
-
-1. 🏃‍♂️ АКТИВНОСТЬ [1 предложение]
-
-2. 🥗 ПИТАНИЕ — объясни почему каждый продукт:
-• Яблоко — [пектин связывает токсины]
-• Морковь — [бета-каротин для легких]
-• Зеленый чай — [катехины-антиоксиданты]
-• Оливковое масло — [витамин E]
-• Брокколи — [сульфорафан детоксикация]
-
-3. 💧 ВОДА [сколько + что добавить]
-
-4. 💊 ВИТАМИНЫ — объясни почему:
-• Витамин C — [антиоксидант]
-• Омега-3 — [противовоспалительное]
-• Магний — [расслабляет бронхи]
-• Витамин D — [иммунитет]
-• Цинк — [защита клеток]
-
-Язык: {lang_name}"""
-    
-    system_prompt = f"Объясняй пользу каждого продукта. Язык: {lang_name}"
-    result = call_deepseek(prompt, system_prompt, max_tokens=900, temperature=0.4)
-    
-    if result:
-        return result
-    return get_rule_based_recommendations(pollution_analysis, lang)
 
 def get_rule_based_recommendations(pollution_analysis, lang='ru'):
-    risk_level = pollution_analysis.get('level_code', 1)
-    
+    risk = pollution_analysis.get('level_code', 1)
     activity_map = {
         'ru': {1: "✅ Можно бегать", 2: "🏃‍♂️ Можно гулять", 3: "⚠️ Лучше в зал", 4: "⛔ Только дома", 5: "🚫 Оставайтесь дома"},
-        'kk': {1: "✅ Жүгіруге болады", 2: "🏃‍♂️ Серуендеуге болады", 3: "⚠️ Залға барыңыз", 4: "⛔ Тек үйде", 5: "🚫 Үйде болыңыз"},
-        'en': {1: "✅ You can run", 2: "🏃‍♂️ You can walk", 3: "⚠️ Better go to gym", 4: "⛔ Indoor only", 5: "🚫 Stay home"}
+        'kk': {1: "✅ Жүгіруге болады", 2: "🏃‍♂️ Серуендеуге болады", 3: "⚠️ Залға", 4: "⛔ Үйде", 5: "🚫 Үйде"},
+        'en': {1: "✅ Can run", 2: "🏃‍♂️ Can walk", 3: "⚠️ Gym", 4: "⛔ Indoor", 5: "🚫 Stay home"}
     }
-    
-    activity = activity_map.get(lang, activity_map['ru']).get(risk_level, "✅ OK")
+    activity = activity_map.get(lang, activity_map['ru']).get(risk, "✅ OK")
     
     return (
-        f"🏃‍♂️ Физическая активность:\n{activity}\n\n"
-        f"🥗 Питание:\n• Овощи и фрукты\n• Зелёный чай\n• Брокколи\n\n"
-        f"💧 Питьевой режим:\n• 2 литра в день\n\n"
-        f"💊 Витамины:\n• Витамин C\n• Омега-3"
+        f"🏭 На ветру: данных нет\n"
+        f"📋 Рекомендации:\n"
+        f"• Выход: {activity}\n"
+        f"• Окна: закрыть\n"
+        f"• Питание: овощи, зелёный чай, яблоки\n"
+        f"• Витамины: C, Омега-3"
     )
 
 # ==========================================
@@ -940,32 +795,19 @@ def get_rule_based_recommendations(pollution_analysis, lang='ru'):
 
 def format_h2s_block(h2s_data, lang='ru'):
     titles = {
-        'ru': {
-            'title': "🛢 СЕРОВОДОРОД (H₂S)",
-            'value': "Значение", 'station': "Станция", 'source': "Источник",
-            'updated': "Обновлено", 'no_data': "Прямых датчиков рядом нет",
-            'estimate': "Косвенная оценка по SO₂",
-            'norm': "Норма ВОЗ: 0.15 мг/м³",
-            'days_ago': "дн. назад", 'today': "сегодня", 'yesterday': "вчера"
-        },
-        'kk': {
-            'title': "🛢 КҮКІРТСУТЕК (H₂S)",
-            'value': "Мәні", 'station': "Станция", 'source': "Дереккөз",
-            'updated': "Жаңартылды", 'no_data': "Жақын жерде датчиктер жоқ",
-            'estimate': "SO₂ арқылы бағалау",
-            'norm': "ДДҰ нормасы: 0.15 мг/м³",
-            'days_ago': "күн бұрын", 'today': "бүгін", 'yesterday': "кеше"
-        },
-        'en': {
-            'title': "🛢 HYDROGEN SULFIDE (H₂S)",
-            'value': "Value", 'station': "Station", 'source': "Source",
-            'updated': "Updated", 'no_data': "No direct sensors nearby",
-            'estimate': "Indirect estimate via SO₂",
-            'norm': "WHO limit: 0.15 mg/m³",
-            'days_ago': "days ago", 'today': "today", 'yesterday': "yesterday"
-        }
+        'ru': {'title': "🛢 СЕРОВОДОРОД (H₂S)", 'value': "Значение",
+               'station': "Станция", 'source': "Источник",
+               'no_data': "Прямых датчиков рядом нет",
+               'estimate': "Оценка по SO₂",
+               'norm': "Норма ВОЗ: 0.15 мг/м³"},
+        'kk': {'title': "🛢 КҮКІРТСУТЕК (H₂S)", 'value': "Мәні",
+               'station': "Станция", 'source': "Дереккөз",
+               'no_data': "Датчиктер жоқ", 'estimate': "SO₂ бағасы",
+               'norm': "ДДҰ: 0.15 мг/м³"},
+        'en': {'title': "🛢 H₂S", 'value': "Value", 'station': "Station",
+               'source': "Source", 'no_data': "No direct sensors",
+               'estimate': "SO₂ estimate", 'norm': "WHO limit: 0.15 mg/m³"}
     }
-    
     t = titles.get(lang, titles['ru'])
     msg = f"**{t['title']}:**\n"
     
@@ -974,21 +816,6 @@ def format_h2s_block(h2s_data, lang='ru'):
         if h2s_data.get('station'):
             msg += f"• {t['station']}: {h2s_data['station']}\n"
         msg += f"• {t['source']}: {h2s_data['source']}\n"
-        
-        if h2s_data.get('updated'):
-            try:
-                updated = datetime.fromisoformat(h2s_data['updated'])
-                days = (datetime.now() - updated).days
-                if days == 0:
-                    age = t['today']
-                elif days == 1:
-                    age = t['yesterday']
-                else:
-                    age = f"{days} {t['days_ago']}"
-                msg += f"• {t['updated']}: {age}\n"
-            except:
-                pass
-        
         msg += f"• {t['norm']}\n\n"
     elif h2s_data and 'Оценка' in h2s_data.get('source', ''):
         msg += f"• {t['estimate']}: {h2s_data['h2s']}\n"
@@ -996,27 +823,29 @@ def format_h2s_block(h2s_data, lang='ru'):
     else:
         msg += f"• {t['no_data']}\n"
         msg += f"• {t['norm']}\n\n"
-    
     return msg
 
 # ==========================================
 # 14. ФОРМАТИРОВАНИЕ ОТЧЁТА
 # ==========================================
 
-def format_full_response(air_data, weather, pollution_analysis, recommendations, source_name, lang='ru', ai_source_analysis=None, h2s_data=None):
+def format_full_response(air_data, weather, pollution_analysis, ai_analysis, source_name, lang='ru', h2s_data=None):
     if not lang:
         lang = 'ru'
     
     titles = {
-        'ru': {'report': "Экологический отчет", 'air_quality': "Качество воздуха", 'status': "Статус",
-               'weather': "Погода", 'temp': "Температура", 'humidity': "Влажность", 'wind': "Ветер",
-               'no_data': "Нет данных", 'source': "Источник"},
-        'kk': {'report': "Экологиялық есеп", 'air_quality': "Ауа сапасы", 'status': "Статус",
-               'weather': "Ауа райы", 'temp': "Температура", 'humidity': "Ылғалдылық", 'wind': "Жел",
-               'no_data': "Деректер жоқ", 'source': "Дереккөз"},
-        'en': {'report': "Environmental Report", 'air_quality': "Air Quality", 'status': "Status",
-               'weather': "Weather", 'temp': "Temperature", 'humidity': "Humidity", 'wind': "Wind",
-               'no_data': "No data", 'source': "Source"}
+        'ru': {'report': "Экологический отчет", 'air_quality': "Качество воздуха",
+               'status': "Статус", 'weather': "Погода", 'temp': "Температура",
+               'humidity': "Влажность", 'wind': "Ветер", 'no_data': "Нет данных",
+               'source': "Источник"},
+        'kk': {'report': "Экологиялық есеп", 'air_quality': "Ауа сапасы",
+               'status': "Статус", 'weather': "Ауа райы", 'temp': "Температура",
+               'humidity': "Ылғалдылық", 'wind': "Жел", 'no_data': "Деректер жоқ",
+               'source': "Дереккөз"},
+        'en': {'report': "Environmental Report", 'air_quality': "Air Quality",
+               'status': "Status", 'weather': "Weather", 'temp': "Temperature",
+               'humidity': "Humidity", 'wind': "Wind", 'no_data': "No data",
+               'source': "Source"}
     }
     
     t = titles.get(lang, titles['ru'])
@@ -1034,12 +863,9 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
         
         pm25 = air_data.get('pm25')
         if pm25 and pm25 > 25:
-            if lang == 'ru':
-                msg += f"⚠️ PM2.5 превышает норму ВОЗ\n"
-            elif lang == 'kk':
-                msg += f"⚠️ PM2.5 ДДҰ нормасынан асып түсті\n"
-            else:
-                msg += f"⚠️ PM2.5 exceeds WHO limit\n"
+            if lang == 'ru': msg += f"⚠️ PM2.5 превышает норму ВОЗ\n"
+            elif lang == 'kk': msg += f"⚠️ PM2.5 ДДҰ асып түсті\n"
+            else: msg += f"⚠️ PM2.5 exceeds WHO limit\n"
         
         msg += f"{t['status']}: **{pollution_analysis['level_str']}**\n\n"
     else:
@@ -1054,13 +880,13 @@ def format_full_response(air_data, weather, pollution_analysis, recommendations,
     if h2s_data is not None:
         msg += format_h2s_block(h2s_data, lang)
     
-    if ai_source_analysis:
-        msg += f"{ai_source_analysis}\n\n"
+    # ⭐ ЕДИНЫЙ БЛОК ИИ-АНАЛИЗА
+    if ai_analysis:
+        msg += f"{ai_analysis}\n\n"
     
     msg += "───────────────────────\n"
-    msg += f"{recommendations}"
-    msg += f"\n\n📡 _{t['source']}: {source_name}_"
-    msg += f"\n🤖 _AI: DeepSeek_"
+    msg += f"📡 _{t['source']}: {source_name}_"
+    msg += f"\n🤖 _AI: DeepSeek + OpenStreetMap_"
     
     return msg
 
@@ -1085,7 +911,6 @@ def safe_send_message(chat_id, text):
         
         parts = []
         current = ""
-        
         for line in text.split('\n'):
             if len(current) + len(line) + 1 > max_length:
                 if current:
@@ -1093,7 +918,6 @@ def safe_send_message(chat_id, text):
                 current = line
             else:
                 current = (current + '\n' + line) if current else line
-        
         if current:
             parts.append(current)
         
@@ -1128,20 +952,6 @@ def change_language(message):
     markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
     bot.send_message(message.chat.id, "Выберите язык:", reply_markup=markup)
 
-@bot.message_handler(commands=['test_airkz'])
-def test_airkz_cmd(message):
-    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
-    if ADMIN_ID and message.chat.id != ADMIN_ID:
-        return
-    bot.reply_to(message, "🔍 Тестирую AirKZ API (30 сек)...")
-    try:
-        report = airkz_diagnostic()
-        if len(report) > 4000:
-            report = report[:4000]
-        bot.send_message(message.chat.id, report)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"❌ Ошибка: {e}")
-
 @bot.message_handler(func=lambda m: m.text in ['🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English'])
 def set_language(message):
     if 'Русский' in message.text:
@@ -1160,7 +970,7 @@ def set_language(message):
     start_text = {'ru': "🚀 Старт", 'kk': "🚀 Бастау", 'en': "🚀 Start"}.get(lang, "🚀 Start")
     markup.add(types.KeyboardButton(start_text))
     
-    confirm = {'ru': "Язык сохранен! Выберите действие:", 'kk': "Тіл сақталды!", 'en': "Language saved!"}.get(lang, "OK")
+    confirm = {'ru': "Язык сохранен!", 'kk': "Тіл сақталды!", 'en': "Language saved!"}.get(lang, "OK")
     bot.send_message(message.chat.id, confirm, reply_markup=markup)
 
 @bot.message_handler(func=lambda m: m.text in ['🚀 Старт', '🚀 Бастау', '🚀 Start'])
@@ -1191,6 +1001,10 @@ def refresh_data(message):
     
     msg = {'ru': "Отправьте новую локацию.", 'kk': "Жаңа геолокация жіберіңіз.", 'en': "Send new location."}.get(lang, "OK")
     bot.send_message(message.chat.id, msg, reply_markup=markup)
+
+# ==========================================
+# ГЛАВНЫЙ ОБРАБОТЧИК ЛОКАЦИИ ⭐ ОБНОВЛЁН
+# ==========================================
 
 @bot.message_handler(content_types=['location'])
 def handle_location(message):
@@ -1229,6 +1043,7 @@ def handle_location(message):
                 pass
     
     try:
+        # 1. Качество воздуха
         update_status({
             'ru': "📊 Получаю качество воздуха...",
             'kk': "📊 Ауа сапасын аламын...",
@@ -1240,47 +1055,47 @@ def handle_location(message):
         
         wind_deg = weather.get('wind_deg', 0) if weather else 0
         wind_dir_text = get_wind_direction_text(wind_deg, lang)
+        wind_speed = weather.get('wind_speed', 0) if weather else 0
         
+        # 2. H₂S
         update_status({
-            'ru': "🛢 Ищу H₂S (AirKZ API)...",
-            'kk': "🛢 H₂S іздеймін (AirKZ API)...",
-            'en': "🛢 Searching H₂S (AirKZ API)..."
+            'ru': "🛢 Ищу H₂S...",
+            'kk': "🛢 H₂S іздеймін...",
+            'en': "🛢 Searching H₂S..."
         }.get(lang))
         
-        h2s_data = get_h2s_sync(lat, lon, air_data, lang, timeout=35)
+        h2s_data = get_h2s_sync(lat, lon, air_data, lang, timeout=25)
+        
+        # 3. ОБЪЕКТЫ НА ВЕТРУ (Overpass API) ⭐ НОВОЕ
+        update_status({
+            'ru': "🏭 Ищу объекты на ветру...",
+            'kk': "🏭 Жел жағындағы нысандарды іздеймін...",
+            'en': "🏭 Finding objects on wind side..."
+        }.get(lang))
+        
+        all_objects = find_industrial_objects(lat, lon, radius_km=10)
+        objects_on_wind = filter_on_wind(all_objects, wind_deg, tolerance=45)
+        
+        print(f"📍 Найдено {len(all_objects)} объектов, из них {len(objects_on_wind)} на ветру", flush=True)
         
         pollution_analysis = analyze_pollution(air_data, lang)
         
+        # 4. ЕДИНЫЙ запрос к DeepSeek (анализ + рекомендации) ⭐ НОВОЕ
         update_status({
             'ru': "🤖 Анализирую через ИИ...",
             'kk': "🤖 ИИ арқылы талдаймын...",
             'en': "🤖 Analyzing with AI..."
         }.get(lang))
         
-        results = {'source': None, 'recs': None}
+        ai_analysis = get_ai_analysis(
+            lat, lon, wind_deg, wind_dir_text, wind_speed,
+            air_data, weather, h2s_data, objects_on_wind, lang
+        )
         
-        def fetch_source():
-            try:
-                results['source'] = get_ai_source_analysis(lat, lon, wind_deg, wind_dir_text, air_data, h2s_data, lang)
-            except Exception as e:
-                logging.error(f"Source error: {e}")
+        if not ai_analysis:
+            ai_analysis = get_rule_based_recommendations(pollution_analysis, lang)
         
-        def fetch_recs():
-            try:
-                results['recs'] = get_ai_recommendations(air_data, weather, pollution_analysis, lang, None, h2s_data)
-            except Exception as e:
-                logging.error(f"Recs error: {e}")
-        
-        t1 = threading.Thread(target=fetch_source, daemon=True)
-        t2 = threading.Thread(target=fetch_recs, daemon=True)
-        t1.start()
-        t2.start()
-        t1.join(timeout=25)
-        t2.join(timeout=25)
-        
-        ai_source_analysis = results['source']
-        recommendations = results['recs'] or get_rule_based_recommendations(pollution_analysis, lang)
-        
+        # 5. Удаляем статус и отправляем
         if status_msg_id:
             try:
                 bot.delete_message(message.chat.id, status_msg_id)
@@ -1289,8 +1104,7 @@ def handle_location(message):
         
         response = format_full_response(
             air_data, weather, pollution_analysis,
-            recommendations, source_name, lang,
-            ai_source_analysis, h2s_data
+            ai_analysis, source_name, lang, h2s_data
         )
         
         safe_send_message(message.chat.id, response)
@@ -1333,6 +1147,7 @@ if __name__ == '__main__':
     print(f"🌤 WEATHER: {'✅' if WEATHER_API_KEY else '❌'}", flush=True)
     print(f"🕷 PARSING: {'✅' if PARSING_AVAILABLE else '❌'}", flush=True)
     print(f"🛢 AIRKZ API: {AIRKZ_API_URL}", flush=True)
+    print(f"🏭 OVERPASS: ✅ (OpenStreetMap)", flush=True)
     print("=" * 50, flush=True)
     
     if not BOT_TOKEN or BOT_TOKEN == "DUMMY_TOKEN":
