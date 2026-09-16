@@ -253,7 +253,7 @@ def airkz_get_h2s(lat, lon):
     return None
 
 # ==========================================
-# 6. OVERPASS API (ОБЪЕКТЫ НА ВЕТРУ) ⭐ НОВОЕ
+# 6. OVERPASS API (ОБЪЕКТЫ НА ВЕТРУ)
 # ==========================================
 
 def calculate_distance_bearing(lat1, lon1, lat2, lon2):
@@ -572,13 +572,15 @@ def call_deepseek(prompt, system_prompt=None, max_tokens=1000, temperature=0.7):
         }
         
         print(f"🤖 DeepSeek запрос...", flush=True)
-        r = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=25)
+        r = requests.post(DEEPSEEK_URL, headers=headers, json=body, timeout=30)
         
         if r.status_code == 200:
             data = r.json()
             if 'choices' in data and data['choices']:
                 print(f"✅ DeepSeek ответил", flush=True)
                 return data['choices'][0]['message']['content']
+        else:
+            print(f"❌ DeepSeek {r.status_code}: {r.text[:200]}", flush=True)
     except Exception as e:
         print(f"❌ DeepSeek: {e}", flush=True)
     return None
@@ -678,13 +680,13 @@ def analyze_pollution(air_data, lang='ru'):
     return {'level_str': t[1], 'level_code': 1}
 
 # ==========================================
-# 11. ⭐ НОВЫЙ ЕДИНЫЙ ПРОМПТ (анализ + рекомендации)
+# 11. ⭐ РАСШИРЕННЫЙ ПРОМПТ (анализ + рекомендации)
 # ==========================================
 
 def get_ai_analysis(lat, lon, wind_deg, wind_dir_text, wind_speed,
                     air_data, weather, h2s_data, objects_on_wind, lang='ru'):
     """
-    Логика: Объект на ветру → тип объекта → вещества → рекомендации
+    Комплексный анализ: объекты на ветру + вещества + РАСШИРЕННЫЕ рекомендации
     """
     if not DEEPSEEK_API_KEY:
         return None
@@ -698,6 +700,7 @@ def get_ai_analysis(lat, lon, wind_deg, wind_dir_text, wind_speed,
     no2 = air_data.get('no2', '—') if air_data else '—'
     so2 = air_data.get('so2', '—') if air_data else '—'
     temp = weather.get('temp', '—') if weather else '—'
+    humidity = weather.get('humidity', '—') if weather else '—'
     
     h2s_value = h2s_data.get('h2s', '—') if h2s_data and h2s_data.get('h2s') else '—'
     h2s_unit = h2s_data.get('unit', '') if h2s_data else ''
@@ -724,69 +727,149 @@ def get_ai_analysis(lat, lon, wind_deg, wind_dir_text, wind_speed,
 ДАННЫЕ WAQI:
 AQI: {aqi} | PM2.5: {pm25} | PM10: {pm10} | NO2: {no2} | SO2: {so2}
 H2S: {h2s_value} {h2s_unit}
-Температура: {temp}°C
+Температура: {temp}°C, влажность: {humidity}%
 
 ЗАДАЧА:
+
 1. ВАЖНО: Датчики WAQI могут не стоять рядом с объектом,
    но выбросы от объектов на ветру ВСЕГДА летят к пользователю.
 
 2. Для каждого объекта на ветру (из списка выше):
-   - Назови тип (НПЗ, ТЭЦ, полигон ТБО, химзавод и т.д.)
-   - Укажи какие ВЕЩЕСТВА типичны для такого типа:
+   - Тип объекта (НПЗ, ТЭЦ, полигон ТБО, химзавод)
+   - Какие ВЕЩЕСТВА типичны:
      • НПЗ → H₂S, аммиак, бензол, SO₂, NO₂, углеводороды
      • Полигон ТБО → метан, H₂S, тяжёлые металлы, PM2.5
      • ТЭЦ → SO₂, NO₂, зола, PM2.5, PM10
      • Химзавод → NO₂, аммиак, органика
      • Мусоросжигатель → диоксины, металлы, PM2.5
-   - Пиши "возможны", "вероятны" — не утверждай факты о выбросах
+   - Пиши "возможны", "вероятны"
 
 3. Сопоставь с WAQI:
-   - Если SO2 высокий и рядом ТЭЦ/НПЗ → подтверждение
+   - Если SO₂ высокий и рядом ТЭЦ/НПЗ → подтверждение
    - Если данные в норме, но объект есть → "датчики могут не улавливать"
 
-4. Дай 4 короткие рекомендации (1 строка каждая):
+4. Дай РАСШИРЕННЫЕ рекомендации:
+
+   🚶 АКТИВНОСТЬ:
    • Выход: да/нет/ограниченно
+   • Спорт: можно/нельзя на улице
+   • Лучшее время: [часы]
+
+   😷 ЗАЩИТА (если выходить):
+   • Маска: N95/KN95
+   • Очки для глаз
+   • Длительность: до X минут
+
+   🏠 ДОМА:
+   • Очиститель HEPA
+   • Влажная уборка 2 раза/день
    • Окна: открыть/закрыть
-   • Питание: 3 продукта
-   • Витамины: 2 добавки
+   • Душ после улицы
+
+   👥 ГРУППЫ РИСКА:
+   • Астматики — [совет]
+   • Дети до 5 лет — [совет]
+   • Пожилые 65+ — [совет]
+   • Беременные — [совет]
+
+   🥗 ПИТАНИЕ (с объяснением пользы):
+   • Яблоко — пектин выводит токсины
+   • Брокколи — сульфорафан детоксикация
+   • Зелёный чай — катехины-антиоксиданты
+   • Морковь — бета-каротин для лёгких
+   • [ещё 1-2 продукта]
+
+   💊 ВИТАМИНЫ (с дозировками):
+   • Витамин C — 1000 мг
+   • Витамин D3 — 2000 IU
+   • Омега-3 — 2000 мг
+   • Магний — 400 мг
+
+   ⚠️ СИМПТОМЫ (тревожные):
+   • Кашель, одышка, боль в груди
+   • Жжение в глазах, зуд в горле
+   → В помещение + к врачу
 
 ФОРМАТ ОТВЕТА (строго):
-🏭 На ветру: [объект + тип + расстояние]
-⚠️ Возможны: [вещества с "возможны"]
-📊 С учётом WAQI: [соответствие или расхождение]
-📋 Рекомендации: [4 короткие строки]
-💡 Вывод: [1 строка]
+
+🏭 На ветру:
+• [Объект 1] — [расстояние] — возможны: [вещества]
+• [Объект 2] — [расстояние] — возможны: [вещества]
+
+📊 С учётом WAQI:
+• [вещество] = [значение] — [подтверждает/не подтверждает]
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+🚶 Активность: [кратко]
+😷 Защита: [кратко]
+🏠 Дома: [кратко]
+👥 В группе риска: [кратко]
+🥗 Питание: [4-5 продуктов с пользой]
+💊 Витамины: [3-4 витамина с дозировками]
+⚠️ Симптомы: [1 строка]
+
+💡 Вывод: [1-2 предложения]
 
 ВАЖНО:
-- Не пиши общие фразы ("транспорт", "предприятия")
-- Используй ТОЛЬКО объекты из списка выше
-- Если объектов нет — скажи "промышленных источников на ветру не обнаружено"
-- Будь краток: 10-12 строк максимум
+- Не выдумывай объекты, которых нет в списке
+- Используй "возможны", "вероятны"
+- Если объектов нет — так и напиши
+- Рекомендации конкретные, с цифрами
+- Язык: {lang_name}
 """
     
-    system_prompt = f"Эколог. Язык: {lang_name}. Кратко, по делу."
-    return call_deepseek(prompt, system_prompt, max_tokens=700, temperature=0.3)
+    system_prompt = f"Эколог-аналитик. Язык: {lang_name}. Кратко, конкретно, с цифрами."
+    
+    print("🤖 DeepSeek: комплексный анализ + расширенные рекомендации...", flush=True)
+    return call_deepseek(prompt, system_prompt, max_tokens=1400, temperature=0.3)
 
 # ==========================================
 # 12. Rule-based fallback
 # ==========================================
 
 def get_rule_based_recommendations(pollution_analysis, lang='ru'):
+    """Fallback если DeepSeek недоступен"""
     risk = pollution_analysis.get('level_code', 1)
+    
     activity_map = {
         'ru': {1: "✅ Можно бегать", 2: "🏃‍♂️ Можно гулять", 3: "⚠️ Лучше в зал", 4: "⛔ Только дома", 5: "🚫 Оставайтесь дома"},
-        'kk': {1: "✅ Жүгіруге болады", 2: "🏃‍♂️ Серуендеуге болады", 3: "⚠️ Залға", 4: "⛔ Үйде", 5: "🚫 Үйде"},
+        'kk': {1: "✅ Жүгіруге болады", 2: "🏃‍♂️ Серуендеуге", 3: "⚠️ Залға", 4: "⛔ Үйде", 5: "🚫 Үйде"},
         'en': {1: "✅ Can run", 2: "🏃‍♂️ Can walk", 3: "⚠️ Gym", 4: "⛔ Indoor", 5: "🚫 Stay home"}
     }
+    
+    titles = {
+        'ru': {'on_wind': "На ветру", 'no_obj': "промышленных объектов не обнаружено",
+               'recommendations': "РЕКОМЕНДАЦИИ", 'activity': "Активность",
+               'protection': "Защита", 'home': "Дома", 'risk': "Группа риска",
+               'food': "Питание", 'vitamins': "Витамины", 'symptoms': "Симптомы",
+               'conclusion': "Вывод"},
+        'kk': {'on_wind': "Жел жағында", 'no_obj': "нысандар табылмады",
+               'recommendations': "ҰСЫНЫСТАР", 'activity': "Белсенділік",
+               'protection': "Қорғаныс", 'home': "Үйде", 'risk': "Тәуекел тобы",
+               'food': "Тамақтану", 'vitamins': "Дәрумендер", 'symptoms': "Симптомдар",
+               'conclusion': "Қорытынды"},
+        'en': {'on_wind': "On wind", 'no_obj': "no industrial objects",
+               'recommendations': "RECOMMENDATIONS", 'activity': "Activity",
+               'protection': "Protection", 'home': "Home", 'risk': "Risk group",
+               'food': "Food", 'vitamins': "Vitamins", 'symptoms': "Symptoms",
+               'conclusion': "Conclusion"}
+    }
+    t = titles.get(lang, titles['ru'])
     activity = activity_map.get(lang, activity_map['ru']).get(risk, "✅ OK")
     
     return (
-        f"🏭 На ветру: данных нет\n"
-        f"📋 Рекомендации:\n"
-        f"• Выход: {activity}\n"
-        f"• Окна: закрыть\n"
-        f"• Питание: овощи, зелёный чай, яблоки\n"
-        f"• Витамины: C, Омега-3"
+        f"🏭 {t['on_wind']}: {t['no_obj']}\n\n"
+        f"📊 С учётом WAQI: данные недоступны\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🚶 {t['activity']}: {activity}\n"
+        f"😷 {t['protection']}: N95/KN95 если выйти\n"
+        f"🏠 {t['home']}: очиститель HEPA, влажная уборка\n"
+        f"👥 {t['risk']}: астматики, дети, пожилые, беременные\n"
+        f"🥗 {t['food']}: яблоки, брокколи, зелёный чай\n"
+        f"💊 {t['vitamins']}: C (1000 мг), D3 (2000 IU), Омега-3 (2000 мг), Магний (400 мг)\n"
+        f"⚠️ {t['symptoms']}: кашель, одышка → в помещение + врач\n\n"
+        f"💡 {t['conclusion']}: следите за самочувствием"
     )
 
 # ==========================================
@@ -855,11 +938,8 @@ def format_full_response(air_data, weather, pollution_analysis, ai_analysis, sou
     
     if air_data:
         msg += f"📊 **{t['air_quality']}:**\n"
-        msg += f"• AQI: {air_data.get('aqi', t['no_data'])}\n"
-        msg += f"• PM2.5: {air_data.get('pm25', t['no_data'])} µg/m3\n"
-        msg += f"• PM10: {air_data.get('pm10', t['no_data'])} µg/m3\n"
-        msg += f"• NO2: {air_data.get('no2', t['no_data'])} µg/m3\n"
-        msg += f"• SO2: {air_data.get('so2', t['no_data'])} µg/m3\n"
+        msg += f"• AQI: {air_data.get('aqi', t['no_data'])} | PM2.5: {air_data.get('pm25', t['no_data'])} | PM10: {air_data.get('pm10', t['no_data'])}\n"
+        msg += f"• NO2: {air_data.get('no2', t['no_data'])} | SO2: {air_data.get('so2', t['no_data'])}\n"
         
         pm25 = air_data.get('pm25')
         if pm25 and pm25 > 25:
@@ -872,15 +952,13 @@ def format_full_response(air_data, weather, pollution_analysis, ai_analysis, sou
         msg += f"📊 **{t['air_quality']}:** {t['no_data']}\n\n"
     
     if weather:
-        msg += f"💨 **{t['weather']}:**\n"
-        msg += f"• {t['temp']}: {weather['temp']} C\n"
-        msg += f"• {t['humidity']}: {weather['humidity']}%\n"
-        msg += f"• {t['wind']}: {get_wind_direction_text(weather['wind_deg'], lang)}, {weather['wind_speed']} м/с\n\n"
+        msg += f"💨 **{t['weather']}:** {weather['temp']}°C, {weather['humidity']}%, "
+        msg += f"{t['wind']} {get_wind_direction_text(weather['wind_deg'], lang)} {weather['wind_speed']} м/с\n\n"
     
     if h2s_data is not None:
         msg += format_h2s_block(h2s_data, lang)
     
-    # ⭐ ЕДИНЫЙ БЛОК ИИ-АНАЛИЗА
+    # ЕДИНЫЙ БЛОК ИИ-АНАЛИЗА
     if ai_analysis:
         msg += f"{ai_analysis}\n\n"
     
@@ -1003,7 +1081,7 @@ def refresh_data(message):
     bot.send_message(message.chat.id, msg, reply_markup=markup)
 
 # ==========================================
-# ГЛАВНЫЙ ОБРАБОТЧИК ЛОКАЦИИ ⭐ ОБНОВЛЁН
+# ГЛАВНЫЙ ОБРАБОТЧИК ЛОКАЦИИ
 # ==========================================
 
 @bot.message_handler(content_types=['location'])
@@ -1066,7 +1144,7 @@ def handle_location(message):
         
         h2s_data = get_h2s_sync(lat, lon, air_data, lang, timeout=25)
         
-        # 3. ОБЪЕКТЫ НА ВЕТРУ (Overpass API) ⭐ НОВОЕ
+        # 3. ОБЪЕКТЫ НА ВЕТРУ (Overpass API)
         update_status({
             'ru': "🏭 Ищу объекты на ветру...",
             'kk': "🏭 Жел жағындағы нысандарды іздеймін...",
@@ -1080,7 +1158,7 @@ def handle_location(message):
         
         pollution_analysis = analyze_pollution(air_data, lang)
         
-        # 4. ЕДИНЫЙ запрос к DeepSeek (анализ + рекомендации) ⭐ НОВОЕ
+        # 4. ЕДИНЫЙ запрос к DeepSeek (анализ + расширенные рекомендации)
         update_status({
             'ru': "🤖 Анализирую через ИИ...",
             'kk': "🤖 ИИ арқылы талдаймын...",
