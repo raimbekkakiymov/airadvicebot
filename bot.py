@@ -1244,7 +1244,6 @@ def handle_location(message):
                 pass
     
     try:
-        # 1. Качество воздуха
         update_status({
             'ru': "📊 Получаю качество воздуха...",
             'kk': "📊 Ауа сапасын аламын...",
@@ -1258,7 +1257,6 @@ def handle_location(message):
         wind_dir_text = get_wind_direction_text(wind_deg, lang)
         wind_speed = weather.get('wind_speed', 0) if weather else 0
         
-        # 2. H₂S
         update_status({
             'ru': "🛢 Ищу H₂S...",
             'kk': "🛢 H₂S іздеймін...",
@@ -1267,35 +1265,23 @@ def handle_location(message):
         
         h2s_data = get_h2s_sync(lat, lon, air_data, lang, timeout=25)
         
-        # 3. ОБЪЕКТЫ НА ВЕТРУ (Overpass API)
         update_status({
             'ru': "🏭 Ищу объекты на ветру...",
             'kk': "🏭 Жел жағындағы нысандарды іздеймін...",
             'en': "🏭 Finding objects on wind side..."
         }.get(lang))
         
-        update_status({
-    'ru': "🏭 Ищу объекты на ветру...",
-    'kk': "🏭 Жел жағындағы нысандарды іздеймін...",
-    'en': "🏭 Finding objects on wind side..."
-}.get(lang))
-
-all_objects = find_industrial_objects(lat, lon, radius_km=10)
-objects_on_wind = filter_on_wind(all_objects, wind_deg, tolerance=60)
-
-# Диагностика
-print(f"📍 Найдено {len(all_objects)} всего, {len(objects_on_wind)} на ветру", flush=True)
-
-# Если объектов на ветру нет, но есть рядом — берём ближайшие 3
-if not objects_on_wind and all_objects:
-    print(f"⚠️ На ветру пусто — беру 3 ближайших объекта", flush=True)
-    objects_on_wind = all_objects[:3]
+        all_objects = find_industrial_objects(lat, lon, radius_km=10)
+        objects_on_wind = filter_on_wind(all_objects, wind_deg, tolerance=60)
         
-        print(f"📍 Найдено {len(all_objects)} объектов, из них {len(objects_on_wind)} на ветру", flush=True)
+        print(f"📍 Найдено {len(all_objects)} всего, {len(objects_on_wind)} на ветру", flush=True)
+        
+        if not objects_on_wind and all_objects:
+            print(f"⚠️ На ветру пусто — беру 3 ближайших", flush=True)
+            objects_on_wind = all_objects[:3]
         
         pollution_analysis = analyze_pollution(air_data, lang)
         
-        # 4. ЕДИНЫЙ запрос к DeepSeek (анализ + расширенные рекомендации)
         update_status({
             'ru': "🤖 Анализирую через ИИ...",
             'kk': "🤖 ИИ арқылы талдаймын...",
@@ -1310,7 +1296,6 @@ if not objects_on_wind and all_objects:
         if not ai_analysis:
             ai_analysis = get_rule_based_recommendations(pollution_analysis, lang)
         
-        # 5. Удаляем статус и отправляем
         if status_msg_id:
             try:
                 bot.delete_message(message.chat.id, status_msg_id)
