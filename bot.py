@@ -1132,6 +1132,98 @@ def test_osm_cmd(message):
         text = text[:4000]
     bot.send_message(message.chat.id, text)
 
+@bot.message_handler(commands=['test_h2s'])
+def test_h2s_cmd(message):
+    """Диагностика H2S — /test_h2s 47.09,51.92"""
+    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+    if ADMIN_ID and message.chat.id != ADMIN_ID:
+        bot.reply_to(message, "❌ Только для админа")
+        return
+    
+    args = message.text.replace('/test_h2s', '').strip()
+    if not args or ',' not in args:
+        bot.reply_to(message, "Формат: /test_h2s 47.09,51.92")
+        return
+    
+    try:
+        lat, lon = map(float, args.split(','))
+    except:
+        bot.reply_to(message, "❌ Ошибка формата")
+        return
+    
+    bot.reply_to(message, "🔍 Проверяю все источники H₂S...\n⏳ 30-60 секунд")
+    
+    report = []
+    
+    # 1. AirKZ API
+    report.append("═══ 1. AirKZ API ═══")
+    try:
+        token = airkz_get_token()
+        if token:
+            report.append(f"✅ Токен: {token[:20]}...")
+            result = airkz_get_h2s(lat, lon)
+            if result:
+                report.append(f"✅ H₂S: {result}")
+            else:
+                report.append("❌ Endpoint не вернул H₂S")
+        else:
+            report.append("❌ Токен НЕ получен")
+    except Exception as e:
+        report.append(f"❌ {e}")
+    
+    # 2. ecodata.kz
+    report.append("\n═══ 2. ecodata.kz ═══")
+    try:
+        r = requests.get(f"{ECODATA_BASE}/__sockjs__/info", timeout=10)
+        report.append(f"Status: {r.status_code}")
+        if r.status_code == 200:
+            report.append("✅ SockJS доступен")
+    except Exception as e:
+        report.append(f"❌ {e}")
+    
+    # 3. Казгидромет HTML
+    report.append("\n═══ 3. Казгидромет HTML ═══")
+    try:
+        result = parse_kazhydromet(lat, lon)
+        if result:
+            report.append(f"✅ H₂S: {result}")
+        else:
+            report.append("❌ Не найден")
+    except Exception as e:
+        report.append(f"❌ {e}")
+    
+    # 4. IQAir
+    report.append("\n═══ 4. IQAir ═══")
+    try:
+        result = parse_iqair(lat, lon)
+        if result:
+            report.append(f"✅ H₂S: {result}")
+        else:
+            report.append("❌ Не найден")
+    except Exception as e:
+        report.append(f"❌ {e}")
+    
+    # 5. WAQI + оценка
+    report.append("\n═══ 5. WAQI + оценка ═══")
+    try:
+        air_data, _ = get_best_air_data(lat, lon)
+        if air_data:
+            so2 = air_data.get('so2')
+            report.append(f"SO2 = {so2}")
+            result = estimate_h2s_indirect(air_data)
+            if result:
+                report.append(f"✅ Оценка: {result}")
+            else:
+                report.append("⚠️ SO2 низкий")
+        else:
+            report.append("❌ WAQI нет данных")
+    except Exception as e:
+        report.append(f"❌ {e}")
+    
+    text = "\n".join(report)
+    if len(text) > 4000:
+        text = text[:4000]
+    bot.send_message(message.chat.id, text)
 
 @bot.message_handler(commands=['test_ecodata'])
 def test_ecodata_cmd(message):
