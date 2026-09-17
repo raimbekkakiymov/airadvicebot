@@ -253,8 +253,16 @@ def airkz_get_h2s(lat, lon):
     return None
 
 # ==========================================
-# 6. OVERPASS API (ОБЪЕКТЫ НА ВЕТРУ)
+# 6. OVERPASS API (РЕАЛЬНЫЕ ОБЪЕКТЫ ИЗ OSM)
 # ==========================================
+
+# Список серверов Overpass (fallback)
+OVERPASS_SERVERS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://overpass.osm.ch/api/interpreter",
+]
+
 
 def calculate_distance_bearing(lat1, lon1, lat2, lon2):
     """Расстояние (км) и азимут (°) от точки 1 к точке 2"""
@@ -272,18 +280,41 @@ def calculate_distance_bearing(lat1, lon1, lat2, lon2):
 
 
 def _determine_type(tags):
-    """Определяет тип объекта по OSM-тегам"""
+    """Определяет тип объекта по OSM-тегам (расширенная версия)"""
+    
+    # Свалки
     if tags.get("landuse") == "landfill":
-        return "Полигон ТБО (свалка)"
+        return "Полигон ТБО"
     if tags.get("industrial") == "waste_incinerator":
         return "Мусоросжигательный завод"
+    
+    # Электростанции
     if tags.get("power") == "plant":
         fuel = tags.get("plant:source", "")
         if "coal" in fuel:
             return "Угольная ТЭЦ"
         if "gas" in fuel:
             return "Газовая ТЭЦ"
+        if "oil" in fuel:
+            return "Мазутная ТЭЦ"
         return "Электростанция/ТЭЦ"
+    
+    # Промышленность (industrial=*)
+    industrial = tags.get("industrial", "")
+    if industrial == "oil":
+        return "Нефтедобыча"
+    if industrial == "refinery":
+        return "НПЗ"
+    if industrial == "chemical":
+        return "Химзавод"
+    if industrial == "steel":
+        return "Металлургический завод"
+    if industrial == "mine":
+        return "Шахта/добыча"
+    if industrial == "port":
+        return "Порт"
+    
+    # Заводы (man_made=works + product)
     if tags.get("man_made") == "works":
         product = tags.get("product", "")
         if "oil" in product:
@@ -292,67 +323,138 @@ def _determine_type(tags):
             return "Химзавод"
         if "steel" in product or "metal" in product:
             return "Металлургический завод"
+        if "cement" in product:
+            return "Цементный завод"
         return "Промышленный завод"
+    
+    # Инфраструктура
+    if tags.get("man_made") == "chimney":
+        return "Промышленная труба"
+    if tags.get("man_made") == "storage_tank":
+        return "Резервуар"
+    if tags.get("man_made") == "silo":
+        return "Элеватор/силос"
+    
+    # Здания
+    if tags.get("building") == "industrial":
+        return "Промздание"
+    if tags.get("building") == "factory":
+        return "Фабрика"
+    
+    # Промзоны
     if tags.get("landuse") == "industrial":
         return "Промзона"
+    
+    # Транспорт
     if tags.get("aeroway") == "aerodrome":
         return "Аэропорт"
+    
+    # Карьеры
     if tags.get("landuse") == "quarry":
         return "Карьер"
+    
     return "Промышленный объект"
 
 
+def _query_overpass(query):
+    """Запрос к Overpass с fallback серверами"""
+    for server in OVERPASS_SERVERS:
+        try:
+            r = requests.post(
+                server,
+                data={"data": query},
+                timeout=60,
+                headers={"User-Agent": "AirQualityBot/1.0"}
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if "elements" in data:
+                    return data
+        except Exception as e:
+            print(f"⚠️ Overpass {server}: {e}", flush=True)
+            continue
+    return None
+
+
 def find_industrial_objects(lat, lon, radius_km=10):
-    """Поиск промышленных объектов через OpenStreetMap"""
+    """
+    Расширенный поиск промышленных объектов через OpenStreetMap.
+    Возвращает список реальных объектов с координатами.
+    """
     try:
-        radius_m = radius_km * 1000
+        radius_m = int(radius_km * 1000)
         
+        # Расширенный запрос — покрывает большинство промышленных объектов
         query = f"""
-        [out:json][timeout:30];
+        [out:json][timeout:60];
         (
-          node["man_made"="works"](around:{radius_m},{lat},{lon});
-          way["man_made"="works"](around:{radius_m},{lat},{lon});
-          node["landuse"="landfill"](around:{radius_m},{lat},{lon});
-          way["landuse"="landfill"](around:{radius_m},{lat},{lon});
-          node["power"="plant"](around:{radius_m},{lat},{lon});
-          way["power"="plant"](around:{radius_m},{lat},{lon});
-          node["landuse"="industrial"](around:{radius_m},{lat},{lon});
-          way["landuse"="industrial"](around:{radius_m},{lat},{lon});
-          node["aeroway"="aerodrome"](around:{radius_m},{lat},{lon});
-          way["aeroway"="aerodrome"](around:{radius_m},{lat},{lon});
-          node["industrial"="waste_incinerator"](around:{radius_m},{lat},{lon});
-          node["landuse"="quarry"](around:{radius_m},{lat},{lon});
-          way["landuse"="quarry"](around:{radius_m},{lat},{lon});
+          nwr["man_made"="works"](around:{radius_m},{lat},{lon});
+          nwr["landuse"="industrial"](around:{radius_m},{lat},{lon});
+          nwr["industrial"](around:{radius_m},{lat},{lon});
+          nwr["power"="plant"](around:{radius_m},{lat},{lon});
+          nwr["landuse"="landfill"](around:{radius_m},{lat},{lon});
+          nwr["man_made"="chimney"](around:{radius_m},{lat},{lon});
+          nwr["man_made"="storage_tank"](around:{radius_m},{lat},{lon});
+          nwr["man_made"="silo"](around:{radius_m},{lat},{lon});
+          nwr["building"="industrial"](around:{radius_m},{lat},{lon});
+          nwr["building"="factory"](around:{radius_m},{lat},{lon});
+          nwr["aeroway"="aerodrome"](around:{radius_m},{lat},{lon});
+          nwr["landuse"="quarry"](around:{radius_m},{lat},{lon});
         );
         out center tags;
         """
         
-        print(f"🔍 Overpass: ищу объекты в {radius_km} км...", flush=True)
-        r = requests.post(
-            "https://overpass-api.de/api/interpreter",
-            data={"data": query},
-            timeout=40,
-            headers={"User-Agent": "AirQualityBot/1.0"}
-        )
+        print(f"🔍 Overpass: ищу объекты в {radius_km} км от ({lat},{lon})...", flush=True)
         
-        if r.status_code != 200:
-            print(f"⚠️ Overpass {r.status_code}", flush=True)
+        data = _query_overpass(query)
+        if not data:
+            print(f"❌ Overpass: все серверы недоступны", flush=True)
             return []
         
-        data = r.json()
-        objects = []
+        elements = data.get("elements", [])
+        print(f"📥 Overpass: получено {len(elements)} элементов", flush=True)
         
-        for elem in data.get("elements", []):
-            obj_lat = elem.get("lat") or elem.get("center", {}).get("lat")
-            obj_lon = elem.get("lon") or elem.get("center", {}).get("lon")
+        objects = []
+        seen = set()
+        
+        for elem in elements:
+            # Координаты: node → lat/lon, way/relation → center
+            obj_lat = elem.get("lat")
+            obj_lon = elem.get("lon")
+            
+            if not obj_lat or not obj_lon:
+                center = elem.get("center", {})
+                obj_lat = center.get("lat")
+                obj_lon = center.get("lon")
+            
             if not obj_lat or not obj_lon:
                 continue
             
+            # Дедупликация по координатам + имени
+            key = f"{round(obj_lat,4)}_{round(obj_lon,4)}"
+            if key in seen:
+                continue
+            seen.add(key)
+            
             tags = elem.get("tags", {})
+            
+            # Имя (с fallback на оператора и тип)
+            name = (
+                tags.get("name") or
+                tags.get("name:ru") or
+                tags.get("name:en") or
+                tags.get("operator") or
+                tags.get("brand") or
+                _determine_type(tags)
+            )
+            
             obj_type = _determine_type(tags)
-            name = tags.get("name") or tags.get("name:ru") or tags.get("name:en") or obj_type
             
             distance, bearing = calculate_distance_bearing(lat, lon, obj_lat, obj_lon)
+            
+            # Отсеиваем слишком близкие объекты (< 100м) — обычно это шум
+            if distance < 0.1:
+                continue
             
             objects.append({
                 "name": name,
@@ -360,26 +462,44 @@ def find_industrial_objects(lat, lon, radius_km=10):
                 "distance_km": round(distance, 1),
                 "bearing": round(bearing),
                 "lat": obj_lat,
-                "lon": obj_lon
+                "lon": obj_lon,
+                "tags": tags
             })
         
-        print(f"✅ Overpass: найдено {len(objects)} объектов", flush=True)
+        # Сортируем по расстоянию
+        objects.sort(key=lambda x: x["distance_km"])
+        
+        print(f"✅ Overpass: обработано {len(objects)} объектов", flush=True)
+        
+        # Логируем первые 5 для диагностики
+        for obj in objects[:5]:
+            print(f"   • {obj['name']} ({obj['type']}) — {obj['distance_km']} км, азимут {obj['bearing']}°", flush=True)
+        
         return objects
+    
     except Exception as e:
-        print(f"❌ Overpass: {e}", flush=True)
+        print(f"❌ Overpass error: {e}", flush=True)
         return []
 
 
-def filter_on_wind(objects, wind_deg, tolerance=45):
-    """Фильтр: объекты на стороне ветра (±tolerance°)"""
+def filter_on_wind(objects, wind_deg, tolerance=60):
+    """
+    Фильтр: объекты на стороне ветра.
+    Ветер дует С wind_deg° — значит источник загрязнения на этой стороне.
+    tolerance=60° даёт сектор 120°.
+    """
     result = []
     for obj in objects:
         diff = abs(obj['bearing'] - wind_deg)
         if diff > 180:
             diff = 360 - diff
         if diff <= tolerance:
-            result.append(obj)
-    return sorted(result, key=lambda x: x['distance_km'])
+            obj_copy = dict(obj)
+            obj_copy['wind_diff'] = round(diff)
+            result.append(obj_copy)
+    
+    # Сортировка: сначала близкие к направлению ветра, потом по расстоянию
+    return sorted(result, key=lambda x: (x['distance_km'], x['wind_diff']))
 
 # ==========================================
 # 7. ПАРСЕРЫ H₂S (fallback)
@@ -685,144 +805,110 @@ def analyze_pollution(air_data, lang='ru'):
 
 def get_ai_analysis(lat, lon, wind_deg, wind_dir_text, wind_speed,
                     air_data, weather, h2s_data, objects_on_wind, lang='ru'):
-    """
-    Комплексный анализ: объекты на ветру + вещества + РАСШИРЕННЫЕ рекомендации
-    """
+    """Анализ ТОЛЬКО на основе реальных объектов из OSM"""
     if not DEEPSEEK_API_KEY:
         return None
     
     lang_name = {'ru': 'Русский', 'kk': 'Казахский', 'en': 'English'}.get(lang, 'Русский')
     
-    # WAQI данные
     aqi = air_data.get('aqi', '—') if air_data else '—'
     pm25 = air_data.get('pm25', '—') if air_data else '—'
-    pm10 = air_data.get('pm10', '—') if air_data else '—'
     no2 = air_data.get('no2', '—') if air_data else '—'
     so2 = air_data.get('so2', '—') if air_data else '—'
     temp = weather.get('temp', '—') if weather else '—'
-    humidity = weather.get('humidity', '—') if weather else '—'
     
     h2s_value = h2s_data.get('h2s', '—') if h2s_data and h2s_data.get('h2s') else '—'
     h2s_unit = h2s_data.get('unit', '') if h2s_data else ''
     
-    # Объекты на ветру — ГЛАВНОЕ
+    # Список объектов
     if objects_on_wind:
         obj_lines = []
         for obj in objects_on_wind[:5]:
             obj_lines.append(
-                f"• {obj['name']} ({obj['type']}) — {obj['distance_km']} км, азимут {obj['bearing']}°"
+                f"• {obj['name']} — тип: {obj['type']} — {obj['distance_km']} км, азимут {obj['bearing']}°"
             )
         objects_text = "\n".join(obj_lines)
     else:
-        objects_text = "нет промышленных объектов на ветру в радиусе 10 км"
+        objects_text = "ОБЪЕКТОВ НЕ НАЙДЕНО в радиусе 10 км"
     
-    prompt = f"""Ты эколог. Язык: {lang_name}.
+    prompt = f"""Ты эколог-аналитик. Язык ответа: {lang_name}.
+
+КРИТИЧЕСКИ ВАЖНО:
+Объекты ниже — это РЕАЛЬНЫЕ ДАННЫЕ из OpenStreetMap.
+Ты НЕ ДОЛЖЕН придумывать свои объекты. Работай ТОЛЬКО с этим списком.
 
 ПОЛЬЗОВАТЕЛЬ: {lat}, {lon}
-ВЕТЕР С: {wind_dir_text} ({wind_deg}°), {wind_speed} м/с
+ВЕТЕР ДУЕТ С: {wind_dir_text} ({wind_deg}°), скорость {wind_speed} м/с
 
-ОБЪЕКТЫ НА СТОРОНЕ ВЕТРА (источник загрязнений):
+=== РЕАЛЬНЫЕ ОБЪЕКТЫ НА СТОРОНЕ ВЕТРА ===
 {objects_text}
 
-ДАННЫЕ WAQI:
-AQI: {aqi} | PM2.5: {pm25} | PM10: {pm10} | NO2: {no2} | SO2: {so2}
+=== ДАННЫЕ WAQI ===
+AQI: {aqi}
+PM2.5: {pm25} мкг/м³
+NO2: {no2} мкг/м³
+SO2: {so2} мкг/м³
 H2S: {h2s_value} {h2s_unit}
-Температура: {temp}°C, влажность: {humidity}%
+Температура: {temp}°C
 
-ЗАДАЧА:
+=== ЗАДАЧА ===
 
-1. ВАЖНО: Датчики WAQI могут не стоять рядом с объектом,
-   но выбросы от объектов на ветру ВСЕГДА летят к пользователю.
+1. Возьми 2-3 самых значимых объекта ИЗ СПИСКА ВЫШЕ.
+   Если объектов нет — напиши "промышленных источников не обнаружено".
 
-2. Для каждого объекта на ветру (из списка выше):
-   - Тип объекта (НПЗ, ТЭЦ, полигон ТБО, химзавод)
-   - Какие ВЕЩЕСТВА типичны:
-     • НПЗ → H₂S, аммиак, бензол, SO₂, NO₂, углеводороды
+2. Для КАЖДОГО выбранного объекта укажи:
+   - Название (как в списке, не меняй!)
+   - Тип
+   - Расстояние
+   - Какие ВЕЩЕСТВА возможны от такого типа:
+     • НПЗ → H₂S, аммиак, бензол, SO₂, NO₂
      • Полигон ТБО → метан, H₂S, тяжёлые металлы, PM2.5
-     • ТЭЦ → SO₂, NO₂, зола, PM2.5, PM10
+     • ТЭЦ → SO₂, NO₂, зола, PM2.5
      • Химзавод → NO₂, аммиак, органика
-     • Мусоросжигатель → диоксины, металлы, PM2.5
-   - Пиши "возможны", "вероятны"
+     • Промзона → NO₂, PM2.5, CO
 
-3. Сопоставь с WAQI:
-   - Если SO₂ высокий и рядом ТЭЦ/НПЗ → подтверждение
-   - Если данные в норме, но объект есть → "датчики могут не улавливать"
+3. Сопоставь с данными WAQI — подтверждают ли они источники.
 
-4. Дай РАСШИРЕННЫЕ рекомендации:
+4. Дай рекомендации (кратко, 6 блоков):
+   🚶 Активность
+   😷 Защита (маска, очки)
+   🏠 Дома (очиститель, окна)
+   👥 Группы риска
+   🥗 Питание (4-5 продуктов с пользой)
+   💊 Витамины (с дозировками)
 
-   🚶 АКТИВНОСТЬ:
-   • Выход: да/нет/ограниченно
-   • Спорт: можно/нельзя на улице
-   • Лучшее время: [часы]
+=== ФОРМАТ ОТВЕТА ===
 
-   😷 ЗАЩИТА (если выходить):
-   • Маска: N95/KN95
-   • Очки для глаз
-   • Длительность: до X минут
-
-   🏠 ДОМА:
-   • Очиститель HEPA
-   • Влажная уборка 2 раза/день
-   • Окна: открыть/закрыть
-   • Душ после улицы
-
-   👥 ГРУППЫ РИСКА:
-   • Астматики — [совет]
-   • Дети до 5 лет — [совет]
-   • Пожилые 65+ — [совет]
-   • Беременные — [совет]
-
-   🥗 ПИТАНИЕ (с объяснением пользы):
-   • Яблоко — пектин выводит токсины
-   • Брокколи — сульфорафан детоксикация
-   • Зелёный чай — катехины-антиоксиданты
-   • Морковь — бета-каротин для лёгких
-   • [ещё 1-2 продукта]
-
-   💊 ВИТАМИНЫ (с дозировками):
-   • Витамин C — 1000 мг
-   • Витамин D3 — 2000 IU
-   • Омега-3 — 2000 мг
-   • Магний — 400 мг
-
-   ⚠️ СИМПТОМЫ (тревожные):
-   • Кашель, одышка, боль в груди
-   • Жжение в глазах, зуд в горле
-   → В помещение + к врачу
-
-ФОРМАТ ОТВЕТА (строго):
-
-🏭 На ветру:
-• [Объект 1] — [расстояние] — возможны: [вещества]
-• [Объект 2] — [расстояние] — возможны: [вещества]
+🏭 Источники на ветру:
+• [Название из списка] ([тип]) — [расстояние] км — возможны: [вещества]
+• ...
 
 📊 С учётом WAQI:
-• [вещество] = [значение] — [подтверждает/не подтверждает]
+• [вещество] = [значение] — [комментарий]
 
-━━━━━━━━━━━━━━━━━━━━━━
+━━━━━━━━━━━━━━━━━
 
-🚶 Активность: [кратко]
-😷 Защита: [кратко]
-🏠 Дома: [кратко]
-👥 В группе риска: [кратко]
-🥗 Питание: [4-5 продуктов с пользой]
-💊 Витамины: [3-4 витамина с дозировками]
-⚠️ Симптомы: [1 строка]
+🚶 Активность: ...
+😷 Защита: ...
+🏠 Дома: ...
+👥 Группы риска: ...
+🥗 Питание: ...
+💊 Витамины: ...
 
 💡 Вывод: [1-2 предложения]
 
-ВАЖНО:
-- Не выдумывай объекты, которых нет в списке
-- Используй "возможны", "вероятны"
-- Если объектов нет — так и напиши
-- Рекомендации конкретные, с цифрами
-- Язык: {lang_name}
+=== ЗАПРЕЩЕНО ===
+❌ Придумывать объекты, которых нет в списке
+❌ Писать "транспорт", "предприятия" без конкретики
+❌ Утверждать факты о выбросах (только "возможны")
+
+Отвечай на языке: {lang_name}
 """
     
-    system_prompt = f"Эколог-аналитик. Язык: {lang_name}. Кратко, конкретно, с цифрами."
+    system_prompt = f"Эколог. Работай ТОЛЬКО с объектами из списка. Язык: {lang_name}."
     
-    print("🤖 DeepSeek: комплексный анализ + расширенные рекомендации...", flush=True)
-    return call_deepseek(prompt, system_prompt, max_tokens=1400, temperature=0.3)
+    print("🤖 DeepSeek: анализ реальных объектов...", flush=True)
+    return call_deepseek(prompt, system_prompt, max_tokens=1200, temperature=0.2)
 
 # ==========================================
 # 12. Rule-based fallback
@@ -1023,6 +1109,43 @@ def send_welcome(message):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row('🇷🇺 Русский', '🇰🇿 Қазақша', '🇬🇧 English')
     bot.send_message(message.chat.id, "Выберите язык / Тілді таңдаңыз / Choose language:", reply_markup=markup)
+    
+@bot.message_handler(commands=['test_osm'])
+def test_osm_cmd(message):
+    """Диагностика OSM — /test_osm 47.09,51.92"""
+    ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
+    if ADMIN_ID and message.chat.id != ADMIN_ID:
+        return
+    
+    args = message.text.replace('/test_osm', '').strip()
+    if not args or ',' not in args:
+        bot.reply_to(message, "Формат: /test_osm 47.09,51.92")
+        return
+    
+    try:
+        lat, lon = map(float, args.split(','))
+    except:
+        bot.reply_to(message, "❌ Ошибка формата координат")
+        return
+    
+    bot.reply_to(message, f"🔍 Ищу объекты вокруг {lat},{lon}...")
+    
+    objects = find_industrial_objects(lat, lon, radius_km=10)
+    
+    if not objects:
+        bot.send_message(message.chat.id, "❌ Объектов не найдено")
+        return
+    
+    # Топ-15 объектов
+    text = f"📍 Найдено {len(objects)} объектов:\n\n"
+    for obj in objects[:15]:
+        text += f"• {obj['name'][:40]}\n"
+        text += f"  {obj['type']} — {obj['distance_km']} км, азимут {obj['bearing']}°\n\n"
+    
+    if len(text) > 4000:
+        text = text[:4000]
+    
+    bot.send_message(message.chat.id, text)
 
 @bot.message_handler(commands=['lang'])
 def change_language(message):
@@ -1151,8 +1274,22 @@ def handle_location(message):
             'en': "🏭 Finding objects on wind side..."
         }.get(lang))
         
-        all_objects = find_industrial_objects(lat, lon, radius_km=10)
-        objects_on_wind = filter_on_wind(all_objects, wind_deg, tolerance=45)
+        update_status({
+    'ru': "🏭 Ищу объекты на ветру...",
+    'kk': "🏭 Жел жағындағы нысандарды іздеймін...",
+    'en': "🏭 Finding objects on wind side..."
+}.get(lang))
+
+all_objects = find_industrial_objects(lat, lon, radius_km=10)
+objects_on_wind = filter_on_wind(all_objects, wind_deg, tolerance=60)
+
+# Диагностика
+print(f"📍 Найдено {len(all_objects)} всего, {len(objects_on_wind)} на ветру", flush=True)
+
+# Если объектов на ветру нет, но есть рядом — берём ближайшие 3
+if not objects_on_wind and all_objects:
+    print(f"⚠️ На ветру пусто — беру 3 ближайших объекта", flush=True)
+    objects_on_wind = all_objects[:3]
         
         print(f"📍 Найдено {len(all_objects)} объектов, из них {len(objects_on_wind)} на ветру", flush=True)
         
